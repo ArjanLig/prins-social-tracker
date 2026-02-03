@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <title>Facebook OAuth Callback</title>
+  </head>
+  <body>
+    <h1>OAuth callback OK</h1>
+    <p>Query parameters:</p>
+    <pre id="q"></pre>
+    <script>
+      document.getElementById('q').textContent = window.location.search || '(none)';
+    </script>
+  </body>
+</html>
