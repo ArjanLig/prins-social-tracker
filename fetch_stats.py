@@ -531,9 +531,10 @@ def collect_summary(prins_fb: dict, edupet_fb: dict, prins_fb_posts: list[dict],
 
     # Instagram Prins
     lines.append("\n## Instagram — Prins Petfoods")
-    if prins_ig:
-        lines.append(f"- Volgers: {prins_ig.get('followers_count', '?')}")
-        lines.append(f"- Totaal posts: {prins_ig.get('media_count', '?')}")
+    if prins_ig or ig_posts:
+        if prins_ig:
+            lines.append(f"- Volgers: {prins_ig.get('followers_count', '?')}")
+            lines.append(f"- Totaal posts: {prins_ig.get('media_count', '?')}")
 
         if ig_posts:
             # Filter deze maand
