@@ -2,84 +2,88 @@
 
 Geautomatiseerde tool voor het verzamelen en rapporteren van social media statistieken.
 
-## ✅ Wat werkt nu:
+## Wat werkt nu:
 
+- **Facebook & Instagram posts** via CSV import (Meta Business Suite)
 - **Facebook volgers tracking** via API
-- **Facebook posts data** via CSV import
-- **Excel export** met automatische sheets voor Facebook KPIs en Posts
-- **Instagram** (voorbereid, maar nog niet actief wegens Meta verificatie)
+- **Facebook posts scraping** via Playwright (als aanvulling op CSV)
+- **Excel export** met maandkleuren, KPI's en post-details
+- **AI analyse** via OpenAI GPT-4o-mini
+- **Instagram** (voorbereid, actief via CSV import)
 
-## 📋 Wat je nodig hebt:
-
-1. **Python 3.8+** (je hebt 3.14)
-2. **Facebook Page Access Token**
-3. **Facebook CSV export** (gedownload via Meta Business Suite)
-
-## 🚀 Setup
+## Setup
 
 ### Stap 1: Installeer dependencies
 
 ```bash
-cd ~/Documents/prins-social-tracker
-pip3 install requests python-dotenv openpyxl pandas --break-system-packages
+cd ~/Documents/github/prins-social-tracker
+pip3 install -r requirements.txt --break-system-packages
 ```
 
 ### Stap 2: Configureer environment
 
 ```bash
-# Kopieer example naar .env
-cp .env.example .env
-
-# Edit .env en vul in:
+cp files/.env.example .env
 nano .env
 ```
 
-**Vul in .env:**
-- `PRINS_TOKEN` - Page Access Token (zie hieronder)
-- `PRINS_CSV_PATH` - Pad naar Facebook CSV export
+Vul in `.env`:
+- `PRINS_TOKEN` - Page Access Token
+- `EDUPET_TOKEN` - Edupet Page Access Token
+- `PRINS_PAGE_ID` / `EDUPET_PAGE_ID` - Facebook Page ID's
+- `OPENAI_API_KEY` - Voor AI analyse (optioneel)
 
-**Page Access Token genereren:**
-1. Ga naar: https://developers.facebook.com/tools/explorer
-2. Selecteer "Prins Social Tracker" app
-3. Klik "Get Page Access Token" → "Prins Petfoods"
-4. Kopieer token → plak in .env
+## Gebruik
 
-**Facebook CSV exporteren:**
-1. Ga naar: https://business.facebook.com
-2. Statistieken → Datumbereik selecteren
-3. Scroll naar "Populairste contentindelingen" → Exporteren
-4. Download CSV → zet pad in .env bij PRINS_CSV_PATH
+### CSV Import (aanbevolen)
 
-### Stap 3: Run script
+1. Exporteer posts vanuit [Meta Business Suite](https://business.facebook.com) als CSV
+2. Zet alle CSV-bestanden in een map
+3. Draai:
 
 ```bash
-python3 social_tracker.py
+python3 fetch_stats.py --csv /pad/naar/csv-map/
 ```
 
-## 📊 Output: Social cijfers 2026 PRINS.xlsx
+Het script herkent automatisch of een CSV Facebook of Instagram data bevat.
+Zet "edupet" in de bestandsnaam voor Edupet-data (bijv. `edupet_fb.csv`).
 
-**Facebook KPIs sheet:** Maandelijkse samenvatting (fans, volgers, engagement)  
-**Facebook cijfers sheet:** Individuele posts met metrics
+### Scraper + API (alternatief)
 
-## 🔄 Maandelijks gebruik
+```bash
+# Eerste keer: log in op Facebook
+python3 fb_scraper.py --login
 
-1. Download nieuwe Facebook CSV (vorige maand)
-2. Update `PRINS_CSV_PATH` in .env
-3. Run `python3 social_tracker.py`
-4. Open Excel en bekijk updated data
+# Daarna: data ophalen via scraper + API
+python3 fetch_stats.py
+```
 
-## ⚠️ Troubleshooting
+### Opties
 
-**"Ontbrekende environment variabelen"** → Check .env bestand  
-**"Geen Facebook CSV gevonden"** → Check PRINS_CSV_PATH pad  
-**"400 Bad Request"** → Token verlopen, genereer nieuwe  
+| Optie | Beschrijving |
+|---|---|
+| `--csv MAP` | Map met CSV exports uit Meta Business Suite |
+| `--no-analysis` | Sla de AI-analyse over |
 
-## 🔐 Security
+## Output: Social cijfers 2026 PRINS.xlsx
 
-- `.env` bevat tokens → NOOIT committen
+| Sheet | Inhoud |
+|---|---|
+| **Facebook KPIs** | Maandelijkse samenvatting (fans, volgers, engagement) |
+| **Facebook cijfers** | Individuele posts met metrics + maandkleuren |
+| **Instagram KPI's** | Maandelijkse Instagram metrics |
+| **Instagram cijfers** | Individuele IG posts met metrics + maandkleuren |
+| **AI Analyse** | Gegenereerde analyse en aanbevelingen |
+
+Posts worden automatisch per maand gegroepeerd met afwisselende pastelkleuren.
+
+## Troubleshooting
+
+**"Ontbrekende environment variabelen"** — Check .env bestand
+**"400 Bad Request"** — Token verlopen, genereer nieuwe via [Graph API Explorer](https://developers.facebook.com/tools/explorer)
+**"Geen Facebook-sessie"** — Draai eerst `python3 fb_scraper.py --login`
+
+## Security
+
+- `.env` bevat tokens — NOOIT committen
 - Page tokens verlopen na ~60 dagen
-- Gebruik Page Access Token, niet User token
-
----
-
-**Status:** Facebook ✅ | Instagram ⏳ (wacht op Meta verificatie)

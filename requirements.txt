@@ -3,3 +3,4 @@ python-dotenv
 openpyxl
 openai
 playwright
+pytest
