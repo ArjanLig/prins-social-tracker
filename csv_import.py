@@ -52,7 +52,7 @@ def _parse_date(value: str) -> str:
 
 def _safe_int(value) -> int:
     """Converteer waarde naar int, 0 bij lege/ongeldige waarden."""
-    if not value or value == "":
+    if value is None or value == "":
         return 0
     try:
         return int(float(str(value).replace(",", "").strip()))

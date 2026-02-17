@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from csv_import import parse_csv_file, detect_platform, parse_csv_folder
 
