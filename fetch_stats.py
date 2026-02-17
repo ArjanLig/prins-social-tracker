@@ -195,6 +195,23 @@ def write_ig_posts(wb, posts: list[dict]):
         if isinstance(existing_id, str) and existing_id.strip():
             existing_ids.add(existing_id.strip())
 
+    # Normaliseer CSV-formaat naar API-formaat
+    for post in posts:
+        if "timestamp" not in post and "date" in post:
+            post["timestamp"] = post["date"]
+        if "like_count" not in post and "likes" in post:
+            post["like_count"] = post["likes"]
+        if "comments_count" not in post and "comments" in post:
+            post["comments_count"] = post["comments"]
+        if "media_type" not in post and "type" in post:
+            post["media_type"] = post["type"]
+        if "caption" not in post and "text" in post:
+            post["caption"] = post["text"]
+        if "reach" not in post:
+            post["reach"] = 0
+        if "impressions" not in post and "views" in post:
+            post["impressions"] = post["views"]
+
     appended = 0
     for post in posts:
         post_id = (post.get("id") or post.get("permalink") or "").strip()
@@ -355,11 +372,15 @@ def write_fb_posts(wb, posts: list[dict]):
         views = post.get("views", 0)
         if views:
             ws.cell(row=row, column=5, value=views)                # E: Weergaven (video)
-        # F: Bereik — niet beschikbaar via scraper
+        bereik = post.get("reach", 0)
+        if bereik:
+            ws.cell(row=row, column=6, value=bereik)               # F: Bereik
         ws.cell(row=row, column=7, value=likes)                     # G: Likes
         ws.cell(row=row, column=8, value=comments)                  # H: Reacties
         ws.cell(row=row, column=9, value=shares)                    # I: Shares
-        # J: Klikken — niet beschikbaar via scraper
+        klikken = post.get("clicks", 0)
+        if klikken:
+            ws.cell(row=row, column=10, value=klikken)             # J: Klikken
         ws.cell(row=row, column=11, value=totaal_engagement)        # K: Totaal engagement
         ws.cell(row=row, column=12, value=post_id)                  # L: Post ID (dedupe, verborgen)
         maand_str = f"{MAAND_NL[ts.month]} {ts.year}"
@@ -650,6 +671,8 @@ def main():
     parser = argparse.ArgumentParser(description="Social media tracker voor Prins Petfoods")
     parser.add_argument("--no-analysis", action="store_true",
                         help="Sla de AI-analyse over (alleen data ophalen)")
+    parser.add_argument("--csv", metavar="MAP",
+                        help="Map met CSV exports uit Meta Business Suite")
     args = parser.parse_args()
 
     prins_token = os.getenv("PRINS_TOKEN")
@@ -669,116 +692,146 @@ def main():
     if ENABLE_INSTAGRAM:
         required["PRINS_IG_ID"] = prins_ig_id
 
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        print("Ontbrekende environment variabelen:")
-        for key in missing:
-            print(f"  - {key}")
-        raise SystemExit(1)
+    if not args.csv:
+        missing = [k for k, v in required.items() if not v]
+        if missing:
+            print("Ontbrekende environment variabelen:")
+            for key in missing:
+                print(f"  - {key}")
+            raise SystemExit(1)
 
     wb = load_workbook(EXCEL_FILE)
 
-    # ── Facebook (API voor volgers) ──
-    print("Facebook: Prins Petfoods...")
-    try:
-        prins_fb = fetch_fb_page(prins_page_id, prins_token)
-        print(f"  {prins_fb.get('name')}: {prins_fb.get('fan_count')} fans, "
-              f"{prins_fb.get('followers_count')} volgers")
-    except (requests.HTTPError, requests.ConnectionError) as e:
-        print(f"  API niet beschikbaar: {e}")
-        prins_fb = {"name": "Prins Petfoods"}
-
-    print("Facebook: Edupet...")
-    try:
-        edupet_fb = fetch_fb_page(edupet_page_id, edupet_token)
-        print(f"  {edupet_fb.get('name')}: {edupet_fb.get('fan_count')} fans, "
-              f"{edupet_fb.get('followers_count')} volgers")
-    except (requests.HTTPError, requests.ConnectionError) as e:
-        print(f"  API niet beschikbaar: {e}")
-        edupet_fb = {"name": "Edupet"}
-
-    print("Facebook posts: Prins (scraper)...")
+    # ── CSV Import (primair) ──
     prins_fb_posts = []
-    if has_fb_session():
-        result = scrape_fb_page_posts("PrinsPetfoods", max_posts=25, max_scrolls=10)
-        prins_fb_posts = result.get("posts", [])
-        # Update page info met scraper-data als API data ontbreekt
-        scraper_info = result.get("page_info", {})
-        if scraper_info.get("followers") and not prins_fb.get("followers_count"):
-            prins_fb["followers_count"] = scraper_info["followers"]
-        print(f"  {len(prins_fb_posts)} posts opgehaald via scraper")
-    else:
-        print("  Geen Facebook-sessie. Draai eerst: python3 fb_scraper.py --login")
-
-    print("Facebook posts: Edupet (scraper)...")
     edupet_fb_posts = []
-    if has_fb_session():
-        result = scrape_fb_page_posts("edupet", max_posts=25, max_scrolls=10)
-        edupet_fb_posts = result.get("posts", [])
-        scraper_info = result.get("page_info", {})
-        if scraper_info.get("followers") and not edupet_fb.get("followers_count"):
-            edupet_fb["followers_count"] = scraper_info["followers"]
-        print(f"  {len(edupet_fb_posts)} posts opgehaald via scraper")
-
-    # ── Instagram ──
-    prins_ig = {}
     ig_posts = []
+    prins_fb = {"name": "Prins Petfoods"}
+    edupet_fb = {"name": "Edupet"}
+    prins_ig = {}
     ig_stories = []
     audience = None
 
-    if ENABLE_INSTAGRAM:
-        print("Instagram: Prins profiel...")
-        try:
-            prins_ig = fetch_ig_profile(prins_ig_id, prins_token)
-            print(f"  @{prins_ig.get('username')}: {prins_ig.get('followers_count')} volgers, "
-                  f"{prins_ig.get('media_count')} posts")
-        except requests.HTTPError as e:
-            print(f"  Overgeslagen (permission nodig: instagram_basic): {e}")
+    if args.csv:
+        from csv_import import parse_csv_folder
+        print(f"\nCSV import uit: {args.csv}")
+        csv_data = parse_csv_folder(args.csv)
 
-        if prins_ig:
-            print("Instagram: Prins media...")
-            try:
-                ig_posts = fetch_ig_media(prins_ig_id, prins_token)
-                print(f"  {len(ig_posts)} posts opgehaald")
-            except requests.HTTPError as e:
-                print(f"  Overgeslagen: {e}")
+        for fb_file in csv_data["facebook"]:
+            name = fb_file["file"].lower()
+            if "edupet" in name:
+                edupet_fb_posts = fb_file["posts"]
+                print(f"  → Edupet FB: {len(edupet_fb_posts)} posts uit {fb_file['file']}")
+            else:
+                prins_fb_posts = fb_file["posts"]
+                print(f"  → Prins FB: {len(prins_fb_posts)} posts uit {fb_file['file']}")
 
-            print("Instagram: Prins stories...")
-            ig_stories = fetch_ig_stories(prins_ig_id, prins_token)
-            print(f"  {len(ig_stories)} stories opgehaald")
+        for ig_file in csv_data["instagram"]:
+            ig_posts = ig_file["posts"]
+            print(f"  → Prins IG: {len(ig_posts)} posts uit {ig_file['file']}")
 
-            print("Instagram: Audience demographics...")
-            audience = fetch_ig_audience(prins_ig_id, prins_token)
     else:
-        print("Instagram: Overgeslagen (ENABLE_INSTAGRAM = False)")
-        print("  ⚠️  Zet ENABLE_INSTAGRAM = True zodra Instagram permissions werken")
+        # ── Facebook (API voor volgers) ──
+        print("Facebook: Prins Petfoods...")
+        try:
+            prins_fb = fetch_fb_page(prins_page_id, prins_token)
+            print(f"  {prins_fb.get('name')}: {prins_fb.get('fan_count')} fans, "
+                  f"{prins_fb.get('followers_count')} volgers")
+        except (requests.HTTPError, requests.ConnectionError) as e:
+            print(f"  API niet beschikbaar: {e}")
+            prins_fb = {"name": "Prins Petfoods"}
+
+        print("Facebook: Edupet...")
+        try:
+            edupet_fb = fetch_fb_page(edupet_page_id, edupet_token)
+            print(f"  {edupet_fb.get('name')}: {edupet_fb.get('fan_count')} fans, "
+                  f"{edupet_fb.get('followers_count')} volgers")
+        except (requests.HTTPError, requests.ConnectionError) as e:
+            print(f"  API niet beschikbaar: {e}")
+            edupet_fb = {"name": "Edupet"}
+
+        print("Facebook posts: Prins (scraper)...")
+        prins_fb_posts = []
+        if has_fb_session():
+            result = scrape_fb_page_posts("PrinsPetfoods", max_posts=25, max_scrolls=10)
+            prins_fb_posts = result.get("posts", [])
+            # Update page info met scraper-data als API data ontbreekt
+            scraper_info = result.get("page_info", {})
+            if scraper_info.get("followers") and not prins_fb.get("followers_count"):
+                prins_fb["followers_count"] = scraper_info["followers"]
+            print(f"  {len(prins_fb_posts)} posts opgehaald via scraper")
+        else:
+            print("  Geen Facebook-sessie. Draai eerst: python3 fb_scraper.py --login")
+
+        print("Facebook posts: Edupet (scraper)...")
+        edupet_fb_posts = []
+        if has_fb_session():
+            result = scrape_fb_page_posts("edupet", max_posts=25, max_scrolls=10)
+            edupet_fb_posts = result.get("posts", [])
+            scraper_info = result.get("page_info", {})
+            if scraper_info.get("followers") and not edupet_fb.get("followers_count"):
+                edupet_fb["followers_count"] = scraper_info["followers"]
+            print(f"  {len(edupet_fb_posts)} posts opgehaald via scraper")
+
+        # ── Instagram ──
+        if ENABLE_INSTAGRAM:
+            print("Instagram: Prins profiel...")
+            try:
+                prins_ig = fetch_ig_profile(prins_ig_id, prins_token)
+                print(f"  @{prins_ig.get('username')}: {prins_ig.get('followers_count')} volgers, "
+                      f"{prins_ig.get('media_count')} posts")
+            except requests.HTTPError as e:
+                print(f"  Overgeslagen (permission nodig: instagram_basic): {e}")
+
+            if prins_ig:
+                print("Instagram: Prins media...")
+                try:
+                    ig_posts = fetch_ig_media(prins_ig_id, prins_token)
+                    print(f"  {len(ig_posts)} posts opgehaald")
+                except requests.HTTPError as e:
+                    print(f"  Overgeslagen: {e}")
+
+                print("Instagram: Prins stories...")
+                ig_stories = fetch_ig_stories(prins_ig_id, prins_token)
+                print(f"  {len(ig_stories)} stories opgehaald")
+
+                print("Instagram: Audience demographics...")
+                audience = fetch_ig_audience(prins_ig_id, prins_token)
+        else:
+            print("Instagram: Overgeslagen (ENABLE_INSTAGRAM = False)")
+            print("  Zet ENABLE_INSTAGRAM = True zodra Instagram permissions werken")
 
     # ── Vorige volgers ──
     prev_followers = get_prev_followers(wb)
 
     # ── Schrijf naar Excel ──
     print("\nSchrijven naar Excel...")
-    if ig_posts and ENABLE_INSTAGRAM:
+    if ig_posts:
         write_ig_posts(wb, ig_posts)
-        print("  ✓ Instagram posts geschreven")
+        print("  V Instagram posts geschreven")
     if prins_ig and ENABLE_INSTAGRAM:
         write_ig_kpis(wb, prins_ig, ig_posts, ig_stories, audience, prev_followers)
-        print("  ✓ Instagram KPI's geschreven")
+        print("  V Instagram KPI's geschreven")
 
-    write_followers(wb, prins_fb, prins_ig, edupet_fb)
-    print("  ✓ Volgers statistieken geschreven")
+    if not args.csv:
+        write_followers(wb, prins_fb, prins_ig, edupet_fb)
+        print("  V Volgers statistieken geschreven")
 
     if prins_fb_posts:
         n = write_fb_posts(wb, prins_fb_posts)
         write_fb_kpis(wb, prins_fb, prins_fb_posts)
-        print(f"  ✓ Facebook posts geschreven ({n} nieuwe)")
-        print("  ✓ Facebook KPI's geschreven")
+        print(f"  V Facebook Prins posts geschreven ({n} nieuwe)")
+        print("  V Facebook Prins KPI's geschreven")
+
+    if edupet_fb_posts:
+        n = write_fb_posts(wb, edupet_fb_posts)
+        print(f"  V Facebook Edupet posts geschreven ({n} nieuwe)")
 
     wb.save(EXCEL_FILE)
-    print(f"\n✅ Opgeslagen in {EXCEL_FILE}")
+    print(f"\nOpgeslagen in {EXCEL_FILE}")
 
-    if not ENABLE_INSTAGRAM:
-        print("\n⚠️  Instagram data is overgeslagen")
+    if not ENABLE_INSTAGRAM and not args.csv:
+        print("\nInstagram data is overgeslagen")
         print("    Zet ENABLE_INSTAGRAM = True zodra verificatie werkt")
 
     # ── AI Analyse ──
