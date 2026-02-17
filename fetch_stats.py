@@ -666,6 +666,30 @@ def write_analysis(wb, analysis: str):
     ws.column_dimensions["A"].width = 120
 
 
+# ─── Merge CSV + Scraper ─────────────────────────────────────────────
+
+def merge_scraper_data(csv_posts: list[dict], scraper_posts: list[dict]) -> list[dict]:
+    """Vul CSV-posts aan met scraper-data waar velden ontbreken."""
+    # Index scraper posts op datum (YYYY-MM-DD)
+    scraper_by_date = {}
+    for p in scraper_posts:
+        date_key = p.get("date", "")[:10]
+        if date_key:
+            scraper_by_date.setdefault(date_key, []).append(p)
+
+    for post in csv_posts:
+        date_key = post.get("date", "")[:10]
+        matches = scraper_by_date.get(date_key, [])
+        if not matches:
+            continue
+        # Gebruik eerste match op dezelfde dag
+        sp = matches[0]
+        for field in ("likes", "comments", "shares", "views"):
+            if not post.get(field) and sp.get(field):
+                post[field] = sp[field]
+    return csv_posts
+
+
 # ─── Main ───────────────────────────────────────────────────────────
 
 def main():
@@ -801,6 +825,15 @@ def main():
         else:
             print("Instagram: Overgeslagen (ENABLE_INSTAGRAM = False)")
             print("  Zet ENABLE_INSTAGRAM = True zodra Instagram permissions werken")
+
+    # ── Scraper aanvullen als CSV primair is ──
+    if args.csv and has_fb_session():
+        print("\nScraper: aanvullen ontbrekende data...")
+        result = scrape_fb_page_posts("PrinsPetfoods", max_posts=25, max_scrolls=10)
+        scraper_posts = result.get("posts", [])
+        if scraper_posts and prins_fb_posts:
+            prins_fb_posts = merge_scraper_data(prins_fb_posts, scraper_posts)
+            print(f"  V {len(scraper_posts)} scraper posts gemerged met Prins FB")
 
     # ── Vorige volgers ──
     prev_followers = get_prev_followers(wb)
