@@ -1,0 +1,7 @@
+.env
+.env.txt
+__pycache__/
+*.pyc
+.fb_session/
+.DS_Store
+~$*
