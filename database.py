@@ -57,6 +57,8 @@ def insert_posts(db_path: str, posts: list[dict], platform: str, page: str) -> i
     now = datetime.now(timezone.utc).isoformat()
     inserted = 0
     for p in posts:
+        if not p.get("date"):
+            continue
         likes = p.get("likes", 0) or 0
         comments = p.get("comments", 0) or 0
         shares = p.get("shares", 0) or 0
@@ -140,7 +142,7 @@ def get_monthly_stats(db_path: str = DEFAULT_DB, platform: str | None = None) ->
     query = """
         SELECT
             platform, page,
-            strftime('%%Y-%%m', date) as month,
+            strftime('%Y-%m', date) as month,
             COUNT(*) as total_posts,
             SUM(likes) as total_likes,
             SUM(comments) as total_comments,
