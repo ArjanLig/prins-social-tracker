@@ -1,0 +1,160 @@
+# database.py
+"""SQLite database layer voor Prins Social Tracker."""
+
+import sqlite3
+from datetime import datetime, timezone
+
+DEFAULT_DB = "social_tracker.db"
+
+def _connect(db_path: str = DEFAULT_DB) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def init_db(db_path: str = DEFAULT_DB):
+    """Create tables if they don't exist."""
+    conn = _connect(db_path)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            page TEXT NOT NULL,
+            post_id TEXT,
+            date TEXT NOT NULL,
+            type TEXT DEFAULT 'Post',
+            text TEXT DEFAULT '',
+            reach INTEGER DEFAULT 0,
+            impressions INTEGER DEFAULT 0,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            clicks INTEGER DEFAULT 0,
+            engagement INTEGER DEFAULT 0,
+            engagement_rate REAL DEFAULT 0.0,
+            theme TEXT DEFAULT '',
+            campaign TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE(platform, page, date, text)
+        );
+
+        CREATE TABLE IF NOT EXISTS uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            page TEXT DEFAULT '',
+            post_count INTEGER DEFAULT 0,
+            uploaded_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+def insert_posts(db_path: str, posts: list[dict], platform: str, page: str) -> int:
+    """Insert posts, skip duplicates. Returns number of new posts inserted."""
+    conn = _connect(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    inserted = 0
+    for p in posts:
+        likes = p.get("likes", 0) or 0
+        comments = p.get("comments", 0) or 0
+        shares = p.get("shares", 0) or 0
+        reach = p.get("reach", 0) or 0
+        engagement = likes + comments + shares
+        er = (engagement / reach * 100) if reach > 0 else 0.0
+        try:
+            conn.execute("""
+                INSERT INTO posts (platform, page, post_id, date, type, text,
+                    reach, impressions, likes, comments, shares, clicks,
+                    engagement, engagement_rate, source_file, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                platform, page,
+                p.get("id", ""),
+                p.get("date", ""),
+                p.get("type", "Post"),
+                p.get("text", ""),
+                reach,
+                p.get("views", 0) or 0,
+                likes, comments, shares,
+                p.get("clicks", 0) or 0,
+                engagement, round(er, 2),
+                p.get("source", ""),
+                now,
+            ))
+            inserted += 1
+        except sqlite3.IntegrityError:
+            pass  # duplicate, skip
+    conn.commit()
+    conn.close()
+    return inserted
+
+def get_posts(db_path: str = DEFAULT_DB, platform: str | None = None,
+              page: str | None = None) -> list[dict]:
+    """Retrieve posts, optionally filtered by platform/page."""
+    conn = _connect(db_path)
+    query = "SELECT * FROM posts WHERE 1=1"
+    params: list = []
+    if platform:
+        query += " AND platform = ?"
+        params.append(platform)
+    if page:
+        query += " AND page = ?"
+        params.append(page)
+    query += " ORDER BY date DESC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def update_post_labels(db_path: str, post_id: int, theme: str, campaign: str):
+    """Update theme and campaign for a post."""
+    conn = _connect(db_path)
+    conn.execute(
+        "UPDATE posts SET theme = ?, campaign = ? WHERE id = ?",
+        (theme, campaign, post_id)
+    )
+    conn.commit()
+    conn.close()
+
+def log_upload(db_path: str, filename: str, platform: str, page: str, post_count: int):
+    """Log a CSV upload."""
+    conn = _connect(db_path)
+    conn.execute(
+        "INSERT INTO uploads (filename, platform, page, post_count, uploaded_at) VALUES (?, ?, ?, ?, ?)",
+        (filename, platform, page, post_count, datetime.now(timezone.utc).isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+def get_uploads(db_path: str = DEFAULT_DB) -> list[dict]:
+    """Retrieve upload history."""
+    conn = _connect(db_path)
+    rows = conn.execute("SELECT * FROM uploads ORDER BY uploaded_at DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_monthly_stats(db_path: str = DEFAULT_DB, platform: str | None = None) -> list[dict]:
+    """Get aggregated monthly stats."""
+    conn = _connect(db_path)
+    query = """
+        SELECT
+            platform, page,
+            strftime('%%Y-%%m', date) as month,
+            COUNT(*) as total_posts,
+            SUM(likes) as total_likes,
+            SUM(comments) as total_comments,
+            SUM(shares) as total_shares,
+            SUM(engagement) as total_engagement,
+            SUM(reach) as total_reach,
+            SUM(impressions) as total_impressions
+        FROM posts WHERE 1=1
+    """
+    params: list = []
+    if platform:
+        query += " AND platform = ?"
+        params.append(platform)
+    query += " GROUP BY platform, page, month ORDER BY month DESC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
