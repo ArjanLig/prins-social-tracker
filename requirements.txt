@@ -1,7 +1,4 @@
-python-dotenv
-openpyxl
-openai
-playwright
-pytest
 streamlit
 pandas
+openpyxl
+python-dotenv
