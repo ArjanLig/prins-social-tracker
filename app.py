@@ -264,7 +264,7 @@ def show_posts_table(platform: str, page: str):
 
 
 def show_brand_page(page: str):
-    """Show Facebook + Instagram tabs for a specific brand."""
+    """Show Facebook + Instagram with separate dashboards per channel."""
     label = page.capitalize()
     st.markdown(f"""
     <div style="padding: 0.5rem 0 1rem;">
@@ -276,9 +276,19 @@ def show_brand_page(page: str):
     tab_fb, tab_ig = st.tabs(["Facebook", "Instagram"])
 
     with tab_fb:
+        st.subheader(f"{label} — Facebook")
+        show_channel_dashboard("facebook", page)
+        st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
+                    unsafe_allow_html=True)
+        st.subheader("Posts")
         show_posts_table("facebook", page)
 
     with tab_ig:
+        st.subheader(f"{label} — Instagram")
+        show_channel_dashboard("instagram", page)
+        st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
+                    unsafe_allow_html=True)
+        st.subheader("Posts")
         show_posts_table("instagram", page)
 
 
@@ -328,8 +338,119 @@ def show_upload_tab():
         )
 
 
+def show_channel_dashboard(platform: str, page: str):
+    """Dashboard for a specific platform + page (e.g. Prins Facebook)."""
+    label = f"{page.capitalize()} {platform.capitalize()}"
+    posts = get_posts(platform=platform, page=page)
+
+    if not posts:
+        st.info(f"Nog geen {platform} data voor {page.capitalize()}.")
+        return
+
+    df_all = pd.DataFrame(posts)
+    df_all["date_parsed"] = pd.to_datetime(df_all["date"], errors="coerce")
+
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    df_month = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") == current_month]
+
+    # KPI cards
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Posts deze maand", len(df_month))
+    col2.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
+    reach_val = df_month['reach'].mean() if len(df_month) > 0 else 0
+    col3.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
+    col4.metric("Totaal posts", len(df_all))
+
+    # Monthly trend line charts per jaar
+    df_all["year"] = df_all["date_parsed"].dt.year
+    df_all["month_num"] = df_all["date_parsed"].dt.month
+
+    available_years = sorted(df_all["year"].dropna().unique().astype(int), reverse=True)
+    if not available_years:
+        return
+
+    key_prefix = f"{page}_{platform}"
+    MONTH_LABELS = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun",
+                    "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
+    YEAR_COLORS = ["#0d5a4d", "#a2c4ba", "#e8a87c", "#7c9eb2", "#c4a2d4"]
+
+    selected_years = st.multiselect(
+        "Jaren vergelijken",
+        options=available_years,
+        default=[available_years[0]],
+        key=f"{key_prefix}_years",
+    )
+    if not selected_years:
+        return
+
+    # Bouw maanddata per jaar
+    yearly_data = {}
+    for year in sorted(selected_years):
+        df_year = df_all[df_all["year"] == year]
+        by_month = df_year.groupby("month_num").agg(
+            posts=("id", "count"),
+            engagement=("engagement", "sum"),
+            bereik=("reach", "sum"),
+            likes=("likes", "sum"),
+            reacties=("comments", "sum"),
+        )
+        by_month = by_month.reindex(range(1, 13), fill_value=0)
+        yearly_data[year] = by_month
+
+    layout_base = dict(
+        font=dict(family="Inter, sans-serif", color="#0d5a4d"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(
+            gridcolor="#e0ece9", title=None,
+            tickvals=list(range(1, 13)), ticktext=MONTH_LABELS,
+        ),
+        yaxis=dict(gridcolor="#e0ece9", title=None),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font=dict(size=12)),
+    )
+
+    def year_line_chart(metric, title):
+        fig = go.Figure()
+        for i, year in enumerate(sorted(selected_years)):
+            color = YEAR_COLORS[i % len(YEAR_COLORS)]
+            values = yearly_data[year][metric]
+            fig.add_trace(go.Scatter(
+                x=list(range(1, 13)), y=values,
+                name=str(year),
+                mode="lines+markers",
+                line=dict(color=color, width=2.5),
+                marker=dict(color=color, size=7),
+                hovertemplate="%{text}: %{y:,.0f}<extra></extra>",
+                text=[f"{MONTH_LABELS[m-1]} {year}" for m in range(1, 13)],
+            ))
+        fig.update_layout(
+            title=dict(text=title, font=dict(size=14, color="#0d5a4d")),
+            **layout_base,
+        )
+        return fig
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.plotly_chart(year_line_chart("engagement", "Engagement per maand"),
+                        use_container_width=True)
+    with col_b:
+        st.plotly_chart(year_line_chart("bereik", "Bereik per maand"),
+                        use_container_width=True)
+
+    col_c, col_d = st.columns(2)
+    with col_c:
+        st.plotly_chart(year_line_chart("likes", "Likes per maand"),
+                        use_container_width=True)
+    with col_d:
+        st.plotly_chart(year_line_chart("posts", "Aantal posts per maand"),
+                        use_container_width=True)
+
+
 def show_dashboard(page: str | None = None):
-    """Dashboard with KPIs and monthly charts, optionally filtered by page."""
+    """Overall dashboard with KPIs and monthly charts."""
     if page:
         label = page.capitalize()
         subtitle = f"{label} — Social Media Overzicht"
@@ -365,68 +486,83 @@ def show_dashboard(page: str | None = None):
     col3.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
     col4.metric("Totaal posts", len(df_all))
 
-    # Monthly trend charts — filter stats by page if needed
+    # Monthly trend charts per jaar — per platform lijn
     if stats:
         df_stats = pd.DataFrame(stats)
         if page:
             df_stats = df_stats[df_stats["page"] == page]
 
         if not df_stats.empty:
-            PRINS_COLORS = {
-                "facebook": "#0d5a4d",   # donker teal
-                "instagram": "#a2c4ba",  # sage groen
-            }
-            PRINS_LAYOUT = dict(
+            MONTH_LABELS = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun",
+                            "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
+            YEAR_COLORS = ["#0d5a4d", "#a2c4ba", "#e8a87c", "#7c9eb2", "#c4a2d4"]
+
+            df_stats["month_parsed"] = pd.to_datetime(df_stats["month"])
+            df_stats["year"] = df_stats["month_parsed"].dt.year
+            df_stats["month_num"] = df_stats["month_parsed"].dt.month
+
+            available_years = sorted(df_stats["year"].unique().astype(int), reverse=True)
+
+            selected_years = st.multiselect(
+                "Jaren vergelijken",
+                options=available_years,
+                default=[available_years[0]],
+                key="dashboard_years",
+            )
+            if not selected_years:
+                return
+
+            # Per platform: bouw lijnen per jaar
+            platforms = sorted(df_stats["platform"].unique())
+            PLATFORM_COLORS = {"facebook": "#0d5a4d", "instagram": "#a2c4ba"}
+
+            layout_base = dict(
                 font=dict(family="Inter, sans-serif", color="#0d5a4d"),
                 plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)",
-                legend=dict(
-                    orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1, font=dict(size=13),
-                ),
                 margin=dict(l=20, r=20, t=40, b=40),
-                xaxis=dict(gridcolor="#e0ece9", title=None),
+                xaxis=dict(
+                    gridcolor="#e0ece9", title=None,
+                    tickvals=list(range(1, 13)), ticktext=MONTH_LABELS,
+                ),
                 yaxis=dict(gridcolor="#e0ece9", title=None),
-                bargap=0.3,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1, font=dict(size=12)),
             )
 
-            def prins_bar_chart(df_pivot, title):
+            def overview_line_chart(metric, title):
                 fig = go.Figure()
-                for col in df_pivot.columns:
-                    fig.add_trace(go.Bar(
-                        x=df_pivot.index,
-                        y=df_pivot[col],
-                        name=col.capitalize(),
-                        marker_color=PRINS_COLORS.get(col, "#0d5a4d"),
-                        marker_line=dict(width=0),
-                        hovertemplate="%{x}: %{y:,.0f}<extra></extra>",
-                    ))
+                for year in sorted(selected_years):
+                    for plat in platforms:
+                        df_yp = df_stats[(df_stats["year"] == year) & (df_stats["platform"] == plat)]
+                        by_month = df_yp.groupby("month_num")[metric].sum()
+                        by_month = by_month.reindex(range(1, 13), fill_value=0)
+                        yi = sorted(selected_years).index(year)
+                        base_color = PLATFORM_COLORS.get(plat, YEAR_COLORS[0])
+                        # Vary opacity for older years
+                        opacity = 1.0 if yi == len(selected_years) - 1 else 0.5
+                        dash = "solid" if yi == len(selected_years) - 1 else "dot"
+                        fig.add_trace(go.Scatter(
+                            x=list(range(1, 13)), y=by_month.values,
+                            name=f"{plat.capitalize()} {year}",
+                            mode="lines+markers",
+                            line=dict(color=base_color, width=2.5, dash=dash),
+                            marker=dict(color=base_color, size=7),
+                            opacity=opacity,
+                            hovertemplate="%{text}: %{y:,.0f}<extra></extra>",
+                            text=[f"{MONTH_LABELS[m-1]} {year}" for m in range(1, 13)],
+                        ))
                 fig.update_layout(
                     title=dict(text=title, font=dict(size=16, color="#0d5a4d")),
-                    barmode="group",
-                    **PRINS_LAYOUT,
+                    **layout_base,
                 )
                 return fig
 
-            chart_data = df_stats.pivot_table(
-                index="month", columns="platform",
-                values="total_engagement", aggfunc="sum"
-            ).fillna(0)
-            st.plotly_chart(prins_bar_chart(chart_data, "Engagement per maand"),
+            st.plotly_chart(overview_line_chart("total_engagement", "Engagement per maand"),
                             use_container_width=True)
-
-            posts_chart = df_stats.pivot_table(
-                index="month", columns="platform",
-                values="total_posts", aggfunc="sum"
-            ).fillna(0)
-            st.plotly_chart(prins_bar_chart(posts_chart, "Aantal posts per maand"),
+            st.plotly_chart(overview_line_chart("total_posts", "Aantal posts per maand"),
                             use_container_width=True)
-
-            reach_chart = df_stats.pivot_table(
-                index="month", columns="platform",
-                values="total_reach", aggfunc="sum"
-            ).fillna(0)
-            st.plotly_chart(prins_bar_chart(reach_chart, "Bereik per maand"),
+            st.plotly_chart(overview_line_chart("total_reach", "Bereik per maand"),
                             use_container_width=True)
 
 
