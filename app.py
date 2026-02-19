@@ -175,8 +175,8 @@ MAAND_NL = {
 }
 
 
-def check_password() -> bool:
-    """Simple password gate."""
+def check_password_DISABLED() -> bool:
+    """Simple password gate (currently disabled)."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
@@ -296,9 +296,8 @@ def show_upload_tab():
     """CSV Upload tab."""
     st.header("CSV Upload")
     st.write("Upload CSV-exports uit Meta Business Suite. "
-             "Het platform (Facebook/Instagram) wordt automatisch gedetecteerd.")
-
-    page = st.selectbox("Pagina", ["prins", "edupet"], key="upload_page")
+             "Platform (Facebook/Instagram) en merk (Prins/Edupet) "
+             "worden automatisch gedetecteerd.")
 
     uploaded_files = st.file_uploader(
         "Kies CSV-bestanden", type=["csv"], accept_multiple_files=True
@@ -314,10 +313,23 @@ def show_upload_tab():
                 platform = detect_platform(tmp_path)
                 posts = parse_csv_file(tmp_path)
                 if posts:
-                    count = insert_posts(DEFAULT_DB, posts, platform=platform, page=page)
-                    log_upload(DEFAULT_DB, uf.name, platform, page, count)
+                    # Tel per merk hoeveel posts er zijn
+                    from collections import Counter
+                    page_counts = Counter(p.get("page") for p in posts)
+                    count = insert_posts(DEFAULT_DB, posts, platform=platform)
                     total_new += count
-                    st.success(f"✓ {uf.name}: {count} nieuwe {platform} posts geïmporteerd")
+                    # Log per merk
+                    for pg, pg_cnt in page_counts.items():
+                        if pg:
+                            log_upload(DEFAULT_DB, uf.name, platform, pg, pg_cnt)
+                    # Toon resultaat
+                    brands = [f"{pg.capitalize()} ({c})"
+                              for pg, c in page_counts.items() if pg]
+                    skipped = page_counts.get(None, 0)
+                    msg = f"✓ {uf.name}: {count} nieuwe {platform} posts — {', '.join(brands)}"
+                    if skipped:
+                        msg += f" ({skipped} overgeslagen, onbekend account)"
+                    st.success(msg)
                 else:
                     st.warning(f"⚠ {uf.name}: geen posts gevonden")
             finally:
@@ -567,9 +579,6 @@ def show_dashboard(page: str | None = None):
 
 
 def main():
-    if not check_password():
-        return
-
     # ── Sidebar navigatie ──
     with st.sidebar:
         st.markdown("""

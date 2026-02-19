@@ -51,14 +51,22 @@ def init_db(db_path: str = DEFAULT_DB):
     conn.commit()
     conn.close()
 
-def insert_posts(db_path: str, posts: list[dict], platform: str, page: str) -> int:
-    """Insert posts, skip duplicates. Returns number of new posts inserted."""
+def insert_posts(db_path: str, posts: list[dict], platform: str,
+                  page: str | None = None) -> int:
+    """Insert posts, skip duplicates. Returns number of new posts inserted.
+
+    Als een post een 'page' veld heeft wordt dat gebruikt, anders de
+    meegegeven page parameter. Posts zonder page worden overgeslagen.
+    """
     conn = _connect(db_path)
     now = datetime.now(timezone.utc).isoformat()
     inserted = 0
     for p in posts:
         if not p.get("date"):
             continue
+        post_page = p.get("page") or page
+        if not post_page:
+            continue  # onbekend account, overslaan
         likes = p.get("likes", 0) or 0
         comments = p.get("comments", 0) or 0
         shares = p.get("shares", 0) or 0
@@ -72,7 +80,7 @@ def insert_posts(db_path: str, posts: list[dict], platform: str, page: str) -> i
                     engagement, engagement_rate, source_file, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                platform, page,
+                platform, post_page,
                 p.get("id", ""),
                 p.get("date", ""),
                 p.get("type", "Post"),

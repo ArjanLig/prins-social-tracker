@@ -41,8 +41,8 @@ def _resolve_columns(header: list[str]) -> dict[str, str | None]:
 
 def _parse_date(value: str) -> str:
     """Parseer datum-string naar ISO-formaat."""
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y %H:%M",
-                "%d/%m/%Y %H:%M", "%Y-%m-%d", "%m/%d/%Y %H:%M"):
+    for fmt in ("%m/%d/%Y %H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S",
+                "%d-%m-%Y %H:%M", "%d/%m/%Y %H:%M", "%Y-%m-%d"):
         try:
             return datetime.strptime(value.strip(), fmt).isoformat()
         except ValueError:
@@ -77,8 +77,46 @@ def detect_platform(csv_path: str | Path) -> str:
     return "facebook"
 
 
+# Pagina-naam -> merk mapping
+PAGE_NAME_MAP = {
+    "prins": "prins",
+    "prins petfoods": "prins",
+    "edupet": "edupet",
+}
+
+# Kolommen die de accountnaam bevatten
+PAGE_COLUMNS = ["Naam van pagina", "Accountnaam", "Gebruikersnaam account"]
+
+
+def _detect_page_from_row(row: dict) -> str | None:
+    """Detecteer het merk uit een enkele CSV-rij."""
+    for col in PAGE_COLUMNS:
+        value = (row.get(col) or "").strip().lower()
+        if value:
+            for keyword, brand in PAGE_NAME_MAP.items():
+                if keyword in value:
+                    return brand
+    return None
+
+
+def detect_page(csv_path: str | Path) -> str | None:
+    """Detecteer het merk (prins/edupet) uit de eerste rij van een CSV.
+
+    Returns de paginanaam als lowercase string, of None als niet gedetecteerd.
+    """
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            return _detect_page_from_row(row)
+    return None
+
+
 def parse_csv_file(csv_path: str | Path) -> list[dict]:
-    """Parseer een Meta Business Suite CSV naar een lijst van post-dicts."""
+    """Parseer een Meta Business Suite CSV naar een lijst van post-dicts.
+
+    Elke post bevat een 'page' veld (prins/edupet/None) op basis van de
+    accountnaam in die rij. Rijen van onbekende accounts krijgen page=None.
+    """
     posts = []
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -100,6 +138,7 @@ def parse_csv_file(csv_path: str | Path) -> list[dict]:
                 "shares": _safe_int(row.get(col_map["shares"] or "")),
                 "clicks": _safe_int(row.get(col_map["klikken"] or "")),
                 "source": str(Path(csv_path).name),
+                "page": _detect_page_from_row(row),
             }
             posts.append(post)
     return posts
