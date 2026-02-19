@@ -202,7 +202,7 @@ def check_password_DISABLED() -> bool:
 
 
 def show_posts_table(platform: str, page: str):
-    """Render an editable posts table for a platform + page combo."""
+    """Render an editable posts table grouped by year > month in expanders."""
     key_prefix = f"{page}_{platform}"
     posts = get_posts(platform=platform, page=page)
     if not posts:
@@ -210,57 +210,63 @@ def show_posts_table(platform: str, page: str):
         return
 
     df = pd.DataFrame(posts)
-
-    # Month filter
     df["date_parsed"] = pd.to_datetime(df["date"], errors="coerce")
-    df["month_sort"] = df["date_parsed"].dt.to_period("M")
-    months = sorted(df["month_sort"].dropna().unique(), reverse=True)
-    month_labels = ["Alle"] + [str(m) for m in months]
-    selected = st.selectbox("Maand", month_labels, key=f"{key_prefix}_month")
+    df["datum_fmt"] = df["date_parsed"].dt.strftime("%d-%m-%Y")
+    df["year"] = df["date_parsed"].dt.year
+    df["month_num"] = df["date_parsed"].dt.month
+    df = df.sort_values("date_parsed", ascending=False)
 
-    if selected != "Alle":
-        df = df[df["month_sort"].astype(str) == selected]
-
-    # Display columns
-    display_cols = ["date", "type", "text", "reach", "impressions", "likes",
+    display_cols = ["datum_fmt", "type", "text", "reach", "impressions", "likes",
                     "comments", "shares", "clicks", "engagement",
                     "engagement_rate", "theme", "campaign"]
     col_labels = {
-        "date": "Datum", "type": "Type", "text": "Omschrijving",
+        "datum_fmt": "Datum", "type": "Type", "text": "Omschrijving",
         "reach": "Bereik", "impressions": "Weergaven", "likes": "Likes",
         "comments": "Reacties", "shares": "Shares", "clicks": "Klikken",
         "engagement": "Engagement", "engagement_rate": "ER%",
         "theme": "Thema", "campaign": "Campagne",
     }
 
-    display_df = df[["id"] + display_cols].copy()
-    display_df = display_df.rename(columns=col_labels)
+    years = sorted(df["year"].dropna().unique(), reverse=True)
+    for year in years:
+        year_df = df[df["year"] == year]
+        year_int = int(year)
+        with st.expander(f"{year_int}", expanded=(year == years[0])):
+            months = sorted(year_df["month_num"].dropna().unique())
+            for month in months:
+                month_df = year_df[year_df["month_num"] == month]
+                month_name = MAAND_NL.get(int(month), str(int(month)))
+                st.markdown(f"**{month_name}**")
 
-    # Editable table
-    edited = st.data_editor(
-        display_df,
-        disabled=[c for c in display_df.columns if c not in ("Thema", "Campagne")],
-        hide_index=True,
-        use_container_width=True,
-        key=f"{key_prefix}_editor",
-    )
+                display_df = month_df[["id"] + display_cols].copy()
+                display_df = display_df.rename(columns=col_labels)
 
-    # Save changes
-    if not edited.equals(display_df):
-        if st.button("Wijzigingen opslaan", key=f"{key_prefix}_save"):
-            for idx in range(len(edited)):
-                row = edited.iloc[idx]
-                orig_row = display_df.iloc[idx] if idx < len(display_df) else None
-                if orig_row is not None:
-                    if row["Thema"] != orig_row["Thema"] or row["Campagne"] != orig_row["Campagne"]:
-                        theme_val = row["Thema"] if pd.notna(row["Thema"]) else ""
-                        campaign_val = row["Campagne"] if pd.notna(row["Campagne"]) else ""
-                        update_post_labels(DEFAULT_DB, int(row["id"]), theme_val, campaign_val)
-            st.success("Labels opgeslagen!")
+                editor_key = f"{key_prefix}_{year_int}_{int(month)}_editor"
+                edited = st.data_editor(
+                    display_df,
+                    disabled=[c for c in display_df.columns
+                              if c not in ("Thema", "Campagne")],
+                    hide_index=True,
+                    use_container_width=True,
+                    key=editor_key,
+                )
 
-    # Summary metrics
-    st.caption(f"{len(df)} posts | Totaal engagement: {df['engagement'].sum():,} | "
-               f"Gem. bereik: {df['reach'].mean():,.0f}")
+                # Save changes
+                if not edited.equals(display_df):
+                    save_key = f"{key_prefix}_{year_int}_{int(month)}_save"
+                    if st.button("Wijzigingen opslaan", key=save_key):
+                        for idx in range(len(edited)):
+                            row = edited.iloc[idx]
+                            orig_row = display_df.iloc[idx] if idx < len(display_df) else None
+                            if orig_row is not None:
+                                if row["Thema"] != orig_row["Thema"] or row["Campagne"] != orig_row["Campagne"]:
+                                    theme_val = row["Thema"] if pd.notna(row["Thema"]) else ""
+                                    campaign_val = row["Campagne"] if pd.notna(row["Campagne"]) else ""
+                                    update_post_labels(DEFAULT_DB, int(row["id"]), theme_val, campaign_val)
+                        st.success("Labels opgeslagen!")
+
+                st.caption(f"{len(month_df)} posts | Engagement: {month_df['engagement'].sum():,} | "
+                           f"Gem. bereik: {month_df['reach'].mean():,.0f}")
 
 
 def show_brand_page(page: str):
@@ -407,7 +413,7 @@ def show_channel_dashboard(platform: str, page: str):
             likes=("likes", "sum"),
             reacties=("comments", "sum"),
         )
-        by_month = by_month.reindex(range(1, 13), fill_value=0)
+        by_month = by_month.reindex(range(1, 13))
         yearly_data[year] = by_month
 
     layout_base = dict(
@@ -548,7 +554,7 @@ def show_dashboard(page: str | None = None):
                     for plat in platforms:
                         df_yp = df_stats[(df_stats["year"] == year) & (df_stats["platform"] == plat)]
                         by_month = df_yp.groupby("month_num")[metric].sum()
-                        by_month = by_month.reindex(range(1, 13), fill_value=0)
+                        by_month = by_month.reindex(range(1, 13))
                         yi = sorted(selected_years).index(year)
                         base_color = PLATFORM_COLORS.get(plat, YEAR_COLORS[0])
                         # Vary opacity for older years

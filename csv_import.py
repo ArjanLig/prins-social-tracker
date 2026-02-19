@@ -8,7 +8,7 @@ from pathlib import Path
 COLUMN_MAP = {
     "datum": ["Publicatietijdstip", "Datum", "Date", "Created", "Aangemaakt"],
     "type": ["Berichttype", "Type", "Media type", "Post Type", "Content type"],
-    "tekst": ["Titel", "Bericht", "Caption", "Message", "Beschrijving", "Post Message"],
+    "tekst": ["Titel", "Bericht", "Caption", "Message", "Beschrijving", "Omschrijving", "Post Message"],
     "bereik": ["Bereik", "Reach", "Lifetime Post Total Reach"],
     "weergaven": ["Weergaven", "Impressions", "Views", "Lifetime Post Total Impressions"],
     "likes": ["Reacties", "Likes", "Vind-ik-leuks", "Lifetime Post Like Reactions"],
