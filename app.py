@@ -107,13 +107,16 @@ def show_posts_table(platform: str):
 
     # Save changes
     if not edited.equals(display_df):
-        for idx in range(len(edited)):
-            row = edited.iloc[idx]
-            orig_row = display_df.iloc[idx] if idx < len(display_df) else None
-            if orig_row is not None:
-                if row["Thema"] != orig_row["Thema"] or row["Campagne"] != orig_row["Campagne"]:
-                    update_post_labels(DEFAULT_DB, int(row["id"]), str(row["Thema"]), str(row["Campagne"]))
-        st.success("Labels opgeslagen!")
+        if st.button("Wijzigingen opslaan", key=f"{platform}_save"):
+            for idx in range(len(edited)):
+                row = edited.iloc[idx]
+                orig_row = display_df.iloc[idx] if idx < len(display_df) else None
+                if orig_row is not None:
+                    if row["Thema"] != orig_row["Thema"] or row["Campagne"] != orig_row["Campagne"]:
+                        theme_val = row["Thema"] if pd.notna(row["Thema"]) else ""
+                        campaign_val = row["Campagne"] if pd.notna(row["Campagne"]) else ""
+                        update_post_labels(DEFAULT_DB, int(row["id"]), theme_val, campaign_val)
+            st.success("Labels opgeslagen!")
 
     # Summary metrics
     st.caption(f"{len(df)} posts | Totaal engagement: {df['engagement'].sum():,} | "
@@ -188,7 +191,8 @@ def show_dashboard():
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Posts deze maand", len(df_month))
     col2.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
-    col3.metric("Gem. bereik", f"{df_month['reach'].mean():,.0f}" if len(df_month) > 0 else "0")
+    reach_val = df_month['reach'].mean() if len(df_month) > 0 else 0
+    col3.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
     col4.metric("Totaal posts", len(df_all))
 
     # Monthly trend charts
