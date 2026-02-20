@@ -62,9 +62,10 @@ def init_db(db_path: str = DEFAULT_DB):
 
 
 def save_follower_snapshot(db_path: str, platform: str, page: str,
-                           followers: int) -> None:
-    """Sla het huidige aantal volgers op voor deze maand."""
-    month = datetime.now(timezone.utc).strftime("%Y-%m")
+                           followers: int, month: str | None = None) -> None:
+    """Sla het aantal volgers op voor een specifieke maand (default: huidige maand)."""
+    if month is None:
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
     conn.execute("""
@@ -104,6 +105,8 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
     """
     conn = _connect(db_path)
     now = datetime.now(timezone.utc).isoformat()
+    # Cache follower counts voor engagement rate berekening
+    _follower_cache: dict[tuple, int] = {}
     inserted = 0
     for p in posts:
         if not p.get("date"):
@@ -116,7 +119,18 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
         shares = p.get("shares", 0) or 0
         reach = p.get("reach", 0) or 0
         engagement = likes + comments + shares
-        er = (engagement / reach * 100) if reach > 0 else 0.0
+        # Engagement rate op basis van volgers
+        post_month = p.get("date", "")[:7]
+        cache_key = (platform, post_page, post_month)
+        if cache_key not in _follower_cache:
+            row = conn.execute(
+                "SELECT followers FROM follower_snapshots "
+                "WHERE platform = ? AND page = ? AND month = ?",
+                cache_key,
+            ).fetchone()
+            _follower_cache[cache_key] = row["followers"] if row else 0
+        followers = _follower_cache[cache_key]
+        er = (engagement / followers * 100) if followers > 0 else 0.0
         try:
             conn.execute("""
                 INSERT INTO posts (platform, page, post_id, date, type, text,

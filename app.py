@@ -36,6 +36,12 @@ st.set_page_config(
 # Init database on startup
 init_db()
 
+# ── Custom styling ──
+st.markdown("""
+<style>
+</style>
+""", unsafe_allow_html=True)
+
 # ── Meta Graph API ──
 FB_API_VERSION = "v21.0"
 FB_BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
@@ -52,45 +58,85 @@ BRAND_CONFIG = {
 }
 
 
-@st.cache_data(ttl=3600)
-def fetch_follower_counts(brand: str) -> dict | None:
-    """Haal volgers op voor Facebook en Instagram via de Graph API."""
+@st.cache_data(ttl=900)
+def sync_follower_current(brand: str) -> dict:
+    """Snelle sync: haal alleen huidige volgers op (2-3 API calls)."""
     config = BRAND_CONFIG.get(brand)
     if not config:
-        return None
+        return {}
 
     token = config.get("token")
     page_id = config.get("page_id")
     if not token or not page_id:
-        return None
+        return {}
 
-    result = {"facebook": None, "instagram": None}
+    result = {}
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    from datetime import timedelta
 
-    # Facebook followers
+    # Facebook: huidige volgers + vorige maand via page_follows
     try:
+        since = (datetime.now(timezone.utc).replace(day=1) - timedelta(days=1)).replace(day=1)
         resp = requests.get(
-            f"{FB_BASE_URL}/{page_id}",
-            params={"fields": "followers_count,fan_count", "access_token": token},
-            timeout=15,
+            f"{FB_BASE_URL}/{page_id}/insights",
+            params={
+                "metric": "page_follows",
+                "period": "day",
+                "since": since.strftime("%Y-%m-%d"),
+                "until": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "access_token": token,
+            },
+            timeout=15, verify=False,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        result["facebook"] = data.get("followers_count") or data.get("fan_count")
+        if resp.status_code == 200:
+            values = resp.json().get("data", [{}])[0].get("values", [])
+            monthly = {}
+            for v in values:
+                month_key = v.get("end_time", "")[:7]
+                monthly[month_key] = v.get("value", 0)
+            for month_key, followers in monthly.items():
+                save_follower_snapshot(DEFAULT_DB, "facebook", brand,
+                                      followers, month=month_key)
+            result["facebook"] = monthly.get(current_month)
     except Exception:
         pass
 
-    # Instagram followers via gekoppeld business account
+    # Instagram: huidige volgers + dagelijkse delta's
     try:
         resp = requests.get(
             f"{FB_BASE_URL}/{page_id}",
             params={"fields": "instagram_business_account{followers_count}",
                     "access_token": token},
-            timeout=15,
+            timeout=15, verify=False,
         )
-        resp.raise_for_status()
-        ig_data = resp.json()
-        ig_account = ig_data.get("instagram_business_account", {})
-        result["instagram"] = ig_account.get("followers_count")
+        ig_data = resp.json().get("instagram_business_account", {})
+        ig_id = ig_data.get("id")
+        current_followers = ig_data.get("followers_count", 0)
+        if ig_id and current_followers:
+            save_follower_snapshot(DEFAULT_DB, "instagram", brand,
+                                  current_followers, month=current_month)
+            result["instagram"] = current_followers
+
+            # Dagelijkse delta's voor vorige maand berekening
+            resp3 = requests.get(
+                f"{FB_BASE_URL}/{ig_id}/insights",
+                params={"metric": "follower_count", "period": "day",
+                        "access_token": token},
+                timeout=15, verify=False,
+            )
+            if resp3.status_code == 200:
+                values = resp3.json().get("data", [{}])[0].get("values", [])
+                monthly_delta = {}
+                for v in values:
+                    month_key = v.get("end_time", "")[:7]
+                    monthly_delta[month_key] = monthly_delta.get(month_key, 0) + v.get("value", 0)
+                running = current_followers
+                for month_key in sorted(monthly_delta.keys(), reverse=True):
+                    if month_key == current_month:
+                        running -= monthly_delta[month_key]
+                        continue
+                    save_follower_snapshot(DEFAULT_DB, "instagram", brand,
+                                          running, month=month_key)
     except Exception:
         pass
 
@@ -111,18 +157,17 @@ def sync_posts_from_api(brand: str) -> dict:
 
     result = {"facebook": 0, "instagram": 0}
 
-    # Facebook posts
+    # Facebook posts (laatste 10 — historische data zit al in DB)
     try:
         resp = requests.get(
             f"{FB_BASE_URL}/{page_id}/published_posts",
             params={
                 "fields": "message,created_time,shares,"
-                          "likes.summary(true),comments.summary(true),"
-                          "insights.metric(post_impressions_unique)",
-                "limit": 50,
+                          "likes.summary(true),comments.summary(true)",
+                "limit": 10,
                 "access_token": token,
             },
-            timeout=30,
+            timeout=15, verify=False,
         )
         resp.raise_for_status()
         fb_posts = []
@@ -130,15 +175,11 @@ def sync_posts_from_api(brand: str) -> dict:
             likes = post.get("likes", {}).get("summary", {}).get("total_count", 0)
             comments = post.get("comments", {}).get("summary", {}).get("total_count", 0)
             shares = post.get("shares", {}).get("count", 0)
-            reach = 0
-            for ins in post.get("insights", {}).get("data", []):
-                if ins["name"] == "post_impressions_unique":
-                    reach = ins["values"][0]["value"]
             fb_posts.append({
-                "date": post.get("created_time", ""),
+                "date": post.get("created_time", "").replace("+0000", ""),
                 "type": "Post",
                 "text": (post.get("message") or "")[:200],
-                "reach": reach,
+                "reach": 0,
                 "views": 0,
                 "likes": likes,
                 "comments": comments,
@@ -152,14 +193,13 @@ def sync_posts_from_api(brand: str) -> dict:
     except Exception:
         pass
 
-    # Instagram posts
+    # Instagram posts (laatste 10)
     try:
-        # Haal IG business account ID op
         resp = requests.get(
             f"{FB_BASE_URL}/{page_id}",
             params={"fields": "instagram_business_account",
                     "access_token": token},
-            timeout=15,
+            timeout=10, verify=False,
         )
         resp.raise_for_status()
         ig_id = resp.json().get("instagram_business_account", {}).get("id")
@@ -168,24 +208,20 @@ def sync_posts_from_api(brand: str) -> dict:
                 f"{FB_BASE_URL}/{ig_id}/media",
                 params={
                     "fields": "caption,timestamp,like_count,comments_count,"
-                              "media_type,insights.metric(reach)",
-                    "limit": 50,
+                              "media_type",
+                    "limit": 10,
                     "access_token": token,
                 },
-                timeout=30,
+                timeout=10, verify=False,
             )
             resp.raise_for_status()
             ig_posts = []
             for post in resp.json().get("data", []):
-                reach = 0
-                for ins in post.get("insights", {}).get("data", []):
-                    if ins["name"] == "reach":
-                        reach = ins["values"][0]["value"]
                 ig_posts.append({
-                    "date": post.get("timestamp", ""),
+                    "date": post.get("timestamp", "").replace("+0000", ""),
                     "type": post.get("media_type", "Post"),
                     "text": (post.get("caption") or "")[:200],
-                    "reach": reach,
+                    "reach": 0,
                     "views": 0,
                     "likes": post.get("like_count", 0),
                     "comments": post.get("comments_count", 0),
@@ -202,162 +238,223 @@ def sync_posts_from_api(brand: str) -> dict:
     return result
 
 
-# ── Prins Petfoods huisstijl CSS ──
+# ── Prins Petfoods design system (Apple-inspired) ──
 st.markdown("""
 <style>
-    /* Import font similar to Prins website */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    /* Global font */
+    /* ── Global ── */
     html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display',
+                     'Helvetica Neue', Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
     }
+    .main .block-container { padding-top: 2rem; }
 
-    /* Header bar */
+    /* ── Header bar ── */
     header[data-testid="stHeader"] {
-        background-color: #0d5a4d;
+        background-color: #fff;
     }
 
-    /* Metric cards */
-    [data-testid="stMetric"] {
-        background-color: #ecf3f1;
-        border: 1px solid #a2c4ba;
-        border-radius: 0.625rem;
-        padding: 1rem;
-    }
-    [data-testid="stMetricLabel"] {
-        color: #0d5a4d;
+    /* ── Typography ── */
+    h1, h2, h3 {
+        color: #1d1d1f !important;
         font-weight: 600;
+        letter-spacing: -0.02em;
+    }
+    h2 { font-size: 2rem; }
+    h3 { font-size: 1.4rem; }
+
+    /* ── Metric cards ── */
+    [data-testid="stMetric"] {
+        background: #0d5a4d;
+        border: none;
+        border-radius: 18px;
+        padding: 20px 24px;
+        box-shadow: none;
+    }
+    [data-testid="stMetric"] label,
+    [data-testid="stMetricLabel"] {
+        color: rgba(255,255,255,0.7) !important;
+        font-size: 0.75rem !important;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.01em;
     }
     [data-testid="stMetricValue"] {
-        color: #0d5a4d;
-        font-weight: 700;
-    }
-
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0;
-        border-bottom: 2px solid #a2c4ba;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #0d5a4d;
-        font-weight: 500;
-        padding: 0.75rem 1.25rem;
-        border-radius: 0.625rem 0.625rem 0 0;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #ecf3f1;
-        border-top: 3px solid #0d5a4d;
-        font-weight: 700;
-    }
-
-    /* Buttons */
-    .stButton > button {
-        background-color: #0d5a4d;
-        color: white;
-        border: none;
-        border-radius: 0.625rem;
         font-weight: 600;
-        padding: 0.5rem 1.5rem;
+        color: #fff;
+        font-size: 1.3rem;
+    }
+    [data-testid="stMetricDelta"],
+    [data-testid="stMetricDelta"] > div {
+        font-size: 0.85rem;
+        color: #fff !important;
+        font-weight: 600;
+        background: transparent !important;
+        background-color: transparent !important;
+    }
+    [data-testid="stMetricDelta"] svg {
+        display: none !important;
+    }
+
+    /* ── Buttons ── */
+    .stButton > button {
+        background-color: #0d5a4d !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 980px !important;
+        padding: 10px 24px !important;
+        font-size: 0.9rem !important;
+        font-weight: 500 !important;
+        transition: background-color 0.2s ease !important;
     }
     .stButton > button:hover {
-        background-color: #0a4a3f;
-        color: white;
+        background-color: #0a4a3f !important;
+        color: white !important;
     }
 
-    /* Selectbox */
+    /* ── Inputs & selects ── */
+    .stTextInput > div > div > input,
+    .stNumberInput > div > div > input {
+        border: 1px solid #d2d2d7 !important;
+        border-radius: 12px !important;
+        padding: 10px 14px !important;
+        font-size: 0.95rem !important;
+        background: #fff !important;
+        transition: border-color 0.2s ease !important;
+    }
+    .stTextInput > div > div > input:focus,
+    .stNumberInput > div > div > input:focus {
+        border-color: #0d5a4d !important;
+        box-shadow: 0 0 0 3px rgba(13,90,77,0.15) !important;
+    }
     [data-baseweb="select"] {
-        border-radius: 0.625rem;
+        border-radius: 12px !important;
+    }
+    .stMultiSelect [data-baseweb="tag"] {
+        background-color: #0d5a4d !important;
+        border-radius: 8px !important;
     }
 
-    /* Data editor / table */
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0;
+        border-bottom: 1px solid #f0f0f2;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #86868b;
+        font-weight: 500;
+        padding: 0.75rem 1.25rem;
+        border-radius: 0;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #1d1d1f;
+        font-weight: 600;
+        border-bottom: 2px solid #0d5a4d;
+        background: transparent;
+    }
+
+    /* ── Expanders ── */
+    [data-testid="stExpander"] {
+        border: 1px solid #d2d2d7;
+        border-radius: 18px;
+        box-shadow: none;
+        overflow: hidden;
+    }
+
+    /* ── Data tables ── */
     [data-testid="stDataFrame"] {
-        border: 1px solid #a2c4ba;
-        border-radius: 0.625rem;
+        border: 1px solid #f0f0f2;
+        border-radius: 18px;
     }
 
-    /* Headers */
-    h1, h2, h3 {
-        color: #0d5a4d !important;
-        font-weight: 700;
-    }
-
-    /* Success messages */
+    /* ── Success messages ── */
     .stSuccess {
-        background-color: #ecf3f1;
+        background-color: rgba(13,90,77,0.06);
         border-left-color: #0d5a4d;
     }
 
-    /* Login page centering */
-    .login-container {
-        max-width: 400px;
-        margin: 4rem auto;
-        padding: 2rem;
-        background: #ecf3f1;
-        border-radius: 0.625rem;
-        border: 1px solid #a2c4ba;
+    /* ── Dividers ── */
+    hr {
+        border-color: #f0f0f2 !important;
     }
 
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: #0d5a4d;
+    /* ── Sidebar ── */
+    section[data-testid="stSidebar"] {
+        background: #fff;
+        border-right: none;
     }
-    [data-testid="stSidebar"] * {
-        color: white;
+    section[data-testid="stSidebar"] * {
+        color: #1d1d1f;
     }
-
-    /* Sidebar expanders */
-    [data-testid="stSidebar"] .streamlit-expanderHeader {
-        background-color: rgba(255,255,255,0.08);
-        border-radius: 0.625rem;
-        color: white;
-    }
-    [data-testid="stSidebar"] .streamlit-expanderHeader:hover {
-        background-color: rgba(255,255,255,0.15);
-    }
-    [data-testid="stSidebar"] .streamlit-expanderContent {
-        background-color: transparent;
-        border: none;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] {
+    section[data-testid="stSidebar"] [data-testid="stExpander"] {
         background-color: transparent;
         border: none !important;
         box-shadow: none !important;
     }
-    [data-testid="stSidebar"] [data-testid="stExpander"] details {
+    section[data-testid="stSidebar"] [data-testid="stExpander"] details {
         background-color: transparent;
         border: none !important;
         box-shadow: none !important;
         outline: none !important;
     }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary {
-        background-color: rgba(255,255,255,0.08);
-        border-radius: 0.625rem;
-        color: white;
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+        background-color: #0d5a4d;
+        border-radius: 14px;
+        color: #fff !important;
+        font-weight: 600;
     }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
-        background-color: rgba(255,255,255,0.15);
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+        background-color: #0a4a3f;
     }
-    [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary * {
+        color: #fff !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
         background-color: transparent;
         border: none;
     }
-    /* Sidebar buttons */
-    [data-testid="stSidebar"] .stButton > button {
-        background-color: rgba(255,255,255,0.05);
-        color: white;
-        border: none;
+    section[data-testid="stSidebar"] .stButton > button {
+        background-color: transparent !important;
+        color: #1d1d1f !important;
+        border: none !important;
+        border-radius: 10px !important;
         text-align: left;
         font-weight: 500;
+        padding: 8px 16px !important;
     }
-    [data-testid="stSidebar"] .stButton > button:hover {
-        background-color: rgba(255,255,255,0.15);
-        color: white;
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        background-color: rgba(13,90,77,0.06) !important;
+        color: #0d5a4d !important;
     }
 
-    /* Caption text */
-    .stCaption {
-        color: #5a7a73;
+    /* ── Caption text ── */
+    .stCaption, [data-testid="stCaptionContainer"] {
+        color: #86868b;
+    }
+
+    /* ── Page transition spinner ── */
+    @keyframes pf-spin { to { transform: rotate(360deg); } }
+    body:has([data-testid="stSidebar"] [data-stale="true"]) [data-testid="stMain"]::before {
+        content: ""; position: fixed; inset: 0; background: #fff; z-index: 9998;
+    }
+    body:has([data-testid="stSidebar"] [data-stale="true"]) [data-testid="stMain"]::after {
+        content: ""; position: fixed; top: 50%; left: 50%;
+        width: 28px; height: 28px; margin: -14px 0 0 -14px;
+        border: 3px solid #e5e5ea; border-top-color: #0d5a4d;
+        border-radius: 50%; animation: pf-spin 0.6s linear infinite; z-index: 9999;
+    }
+
+    /* ── Login page ── */
+    .login-container {
+        max-width: 400px;
+        margin: 4rem auto;
+        padding: 2rem;
+        background: #fff;
+        border-radius: 18px;
+        border: 1px solid #d2d2d7;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -381,8 +478,8 @@ def check_password_DISABLED() -> bool:
     with col_c:
         st.markdown("""
         <div style="text-align: center; padding: 2rem 0 1rem;">
-            <h1 style="color: #0d5a4d; margin-bottom: 0.25rem;">Prins Social Tracker</h1>
-            <p style="color: #5a7a73; font-size: 1.1rem;">Social media dashboard</p>
+            <h1 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">Prins Social Tracker</h1>
+            <p style="color: #86868b; font-size: 1.1rem;">Social media dashboard</p>
         </div>
         """, unsafe_allow_html=True)
         password = st.text_input("Wachtwoord", type="password")
@@ -468,8 +565,8 @@ def show_brand_page(page: str):
     label = page.capitalize()
     st.markdown(f"""
     <div style="padding: 0.5rem 0 1rem;">
-        <h2 style="color: #0d5a4d; margin-bottom: 0.25rem;">{label}</h2>
-        <p style="color: #5a7a73;">Facebook &amp; Instagram overzicht</p>
+        <h2 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">{label}</h2>
+        <p style="color: #86868b;">Facebook &amp; Instagram overzicht</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -566,23 +663,31 @@ def show_channel_dashboard(platform: str, page: str):
     current_month = now.strftime("%Y-%m")
     df_month = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") == current_month]
 
-    # KPI cards
-    # Volgers via API
-    followers = fetch_follower_counts(page)
-    follower_count = followers.get(platform) if followers else None
+    # KPI cards — volgers uit database (al gesynchroniseerd door sync_follower_current)
+    current_month = now.strftime("%Y-%m")
+    from database import _connect
+    _conn = _connect(DEFAULT_DB)
+    _row = _conn.execute(
+        "SELECT followers FROM follower_snapshots WHERE platform = ? AND page = ? AND month = ?",
+        (platform, page, current_month),
+    ).fetchone()
+    _conn.close()
+    follower_count = _row["followers"] if _row else None
 
-    # Sla snapshot op en bereken groei
     follower_delta = None
     if follower_count is not None:
-        save_follower_snapshot(DEFAULT_DB, platform, page, follower_count)
         prev = get_follower_previous_month(DEFAULT_DB, platform, page)
         if prev is not None:
             follower_delta = follower_count - prev
 
     col1, col2, col3, col4, col5 = st.columns(5)
     if follower_count is not None:
-        col1.metric("Volgers", f"{follower_count:,}",
-                     delta=f"{follower_delta:+,}" if follower_delta is not None else None)
+        if follower_delta is not None:
+            arrow = "↑" if follower_delta >= 0 else "↓"
+            col1.metric("Volgers", f"{follower_count:,}",
+                         delta=f"{arrow} {follower_delta:+,} deze maand")
+        else:
+            col1.metric("Volgers", f"{follower_count:,}")
     else:
         col1.metric("Volgers", "–")
     col2.metric("Posts deze maand", len(df_month))
@@ -602,13 +707,13 @@ def show_channel_dashboard(platform: str, page: str):
     key_prefix = f"{page}_{platform}"
     MONTH_LABELS = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun",
                     "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
-    YEAR_COLORS = ["#0d5a4d", "#a2c4ba", "#e8a87c", "#7c9eb2", "#c4a2d4"]
+    YEAR_COLORS = ["#0d5a4d", "#81b29a", "#d32f2f", "#3d405b", "#f2cc8f"]
 
     selected_years = st.multiselect(
         "Jaren vergelijken",
         options=available_years,
-        default=[available_years[0]],
-        key=f"{key_prefix}_years",
+        default=available_years,
+        key=f"{key_prefix}_allyears",
     )
     if not selected_years:
         return
@@ -623,26 +728,36 @@ def show_channel_dashboard(platform: str, page: str):
             bereik=("reach", "sum"),
             likes=("likes", "sum"),
             reacties=("comments", "sum"),
+            er=("engagement_rate", "mean"),
         )
         by_month = by_month.reindex(range(1, 13))
         yearly_data[year] = by_month
 
     layout_base = dict(
-        font=dict(family="Inter, sans-serif", color="#0d5a4d"),
+        font=dict(
+            family="-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
+            color="#1d1d1f",
+        ),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=40, b=40),
+        margin=dict(l=20, r=20, t=50, b=40),
         xaxis=dict(
-            gridcolor="#e0ece9", title=None,
+            gridcolor="#f0f0f2", title=None,
             tickvals=list(range(1, 13)), ticktext=MONTH_LABELS,
+            tickfont=dict(color="#86868b", size=11),
         ),
-        yaxis=dict(gridcolor="#e0ece9", title=None),
+        yaxis=dict(
+            gridcolor="#f0f0f2", title=None,
+            tickfont=dict(color="#86868b", size=11),
+        ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1, font=dict(size=12)),
+                    xanchor="right", x=1,
+                    font=dict(size=12, color="#1d1d1f")),
     )
 
     def year_line_chart(metric, title):
         fig = go.Figure()
+        hover_fmt = "%{text}: %{y:.2f}%%<extra></extra>" if metric == "er" else "%{text}: %{y:,.0f}<extra></extra>"
         for i, year in enumerate(sorted(selected_years)):
             color = YEAR_COLORS[i % len(YEAR_COLORS)]
             values = yearly_data[year][metric]
@@ -650,32 +765,30 @@ def show_channel_dashboard(platform: str, page: str):
                 x=list(range(1, 13)), y=values,
                 name=str(year),
                 mode="lines+markers",
-                line=dict(color=color, width=2.5),
-                marker=dict(color=color, size=7),
-                hovertemplate="%{text}: %{y:,.0f}<extra></extra>",
+                line=dict(color=color, width=2),
+                marker=dict(color=color, size=6),
+                hovertemplate=hover_fmt,
                 text=[f"{MONTH_LABELS[m-1]} {year}" for m in range(1, 13)],
             ))
         fig.update_layout(
-            title=dict(text=title, font=dict(size=14, color="#0d5a4d")),
+            title=dict(text=title, font=dict(size=13, color="#1d1d1f")),
             **layout_base,
         )
         return fig
 
+    st.plotly_chart(year_line_chart("bereik", "Organisch bereik"),
+                    use_container_width=True)
+
     col_a, col_b = st.columns(2)
     with col_a:
-        st.plotly_chart(year_line_chart("engagement", "Engagement per maand"),
+        st.plotly_chart(year_line_chart("er", "E.R. per post (gem. per maand)"),
                         use_container_width=True)
     with col_b:
-        st.plotly_chart(year_line_chart("bereik", "Bereik per maand"),
-                        use_container_width=True)
-
-    col_c, col_d = st.columns(2)
-    with col_c:
         st.plotly_chart(year_line_chart("likes", "Likes per maand"),
                         use_container_width=True)
-    with col_d:
-        st.plotly_chart(year_line_chart("posts", "Aantal posts per maand"),
-                        use_container_width=True)
+
+    st.plotly_chart(year_line_chart("posts", "Aantal posts per maand"),
+                    use_container_width=True)
 
 
 def show_dashboard(page: str | None = None):
@@ -688,8 +801,8 @@ def show_dashboard(page: str | None = None):
         subtitle = "Prins Petfoods &amp; Edupet — Social Media Overzicht"
     st.markdown(f"""
     <div style="padding: 0.5rem 0 1rem;">
-        <h2 style="color: #0d5a4d; margin-bottom: 0.25rem;">Dashboard</h2>
-        <p style="color: #5a7a73;">{subtitle}</p>
+        <h2 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">Dashboard</h2>
+        <p style="color: #86868b;">{subtitle}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -724,7 +837,7 @@ def show_dashboard(page: str | None = None):
         if not df_stats.empty:
             MONTH_LABELS = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun",
                             "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
-            YEAR_COLORS = ["#0d5a4d", "#a2c4ba", "#e8a87c", "#7c9eb2", "#c4a2d4"]
+            YEAR_COLORS = ["#0d5a4d", "#81b29a", "#d32f2f", "#3d405b", "#f2cc8f"]
 
             df_stats["month_parsed"] = pd.to_datetime(df_stats["month"])
             df_stats["year"] = df_stats["month_parsed"].dt.year
@@ -735,8 +848,8 @@ def show_dashboard(page: str | None = None):
             selected_years = st.multiselect(
                 "Jaren vergelijken",
                 options=available_years,
-                default=[available_years[0]],
-                key="dashboard_years",
+                default=available_years,
+                key="dashboard_allyears",
             )
             if not selected_years:
                 return
@@ -799,13 +912,15 @@ def show_single_channel(platform: str, page: str):
     """Show dashboard + posts for a single platform/page combination."""
     # Auto-sync posts via API (gecached voor 15 min)
     sync_posts_from_api(page)
+    # Sync huidige volgers (gecached voor 15 min)
+    sync_follower_current(page)
 
     label = page.capitalize()
     plat_label = platform.capitalize()
     st.markdown(f"""
     <div style="padding: 0.5rem 0 1rem;">
-        <h2 style="color: #0d5a4d; margin-bottom: 0.25rem;">{label} — {plat_label}</h2>
-        <p style="color: #5a7a73;">{plat_label} overzicht</p>
+        <h2 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">{label} — {plat_label}</h2>
+        <p style="color: #86868b;">{plat_label} overzicht</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -825,33 +940,63 @@ def main():
         st.session_state.nav = value
 
     with st.sidebar:
-        st.markdown("""
-        <div style="text-align: center; padding: 1.5rem 0 1rem;">
-            <h2 style="color: white; margin: 0;">Prins</h2>
-            <p style="color: #a2c4ba; font-size: 0.85rem; margin: 0;">Social Tracker</p>
+        import base64, pathlib
+        _logo_bytes = pathlib.Path("files/prins_logo.png").read_bytes()
+        _logo_b64 = base64.b64encode(_logo_bytes).decode()
+        st.markdown(f"""
+        <div style="text-align: center; padding: 0 1rem 0.4rem; margin-top: -1rem;">
+            <img src="data:image/png;base64,{_logo_b64}" style="width: 120px;">
+            <p style="color: #a2c4ba; font-size: 0.7rem; letter-spacing: 0.15em;
+                      text-transform: uppercase; margin: 0.4rem 0 0; font-weight: 500;">
+                Social Tracker</p>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0;'>",
+        st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0 3rem;'>",
                     unsafe_allow_html=True)
+
+        _PRINS_GREEN = "#0d5a4d"
+        _IG_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="{_PRINS_GREEN}" stroke="none"/></svg>'''
+        _FB_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'''
+        _CSV_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>'''
 
         with st.expander("Prins", expanded=st.session_state.nav.startswith("prins")):
-            st.button("Instagram", key="btn_prins_ig", use_container_width=True,
-                      on_click=set_nav, args=("prins_instagram",))
-            st.button("Facebook", key="btn_prins_fb", use_container_width=True,
-                      on_click=set_nav, args=("prins_facebook",))
+            c1, c2 = st.columns([1, 6])
+            with c1:
+                st.markdown(_IG_ICON, unsafe_allow_html=True)
+            with c2:
+                st.button("Instagram", key="btn_prins_ig", use_container_width=True,
+                          on_click=set_nav, args=("prins_instagram",))
+            c1, c2 = st.columns([1, 6])
+            with c1:
+                st.markdown(_FB_ICON, unsafe_allow_html=True)
+            with c2:
+                st.button("Facebook", key="btn_prins_fb", use_container_width=True,
+                          on_click=set_nav, args=("prins_facebook",))
 
         with st.expander("Edupet", expanded=st.session_state.nav.startswith("edupet")):
-            st.button("Instagram", key="btn_edupet_ig", use_container_width=True,
-                      on_click=set_nav, args=("edupet_instagram",))
-            st.button("Facebook", key="btn_edupet_fb", use_container_width=True,
-                      on_click=set_nav, args=("edupet_facebook",))
+            c1, c2 = st.columns([1, 6])
+            with c1:
+                st.markdown(_IG_ICON, unsafe_allow_html=True)
+            with c2:
+                st.button("Instagram", key="btn_edupet_ig", use_container_width=True,
+                          on_click=set_nav, args=("edupet_instagram",))
+            c1, c2 = st.columns([1, 6])
+            with c1:
+                st.markdown(_FB_ICON, unsafe_allow_html=True)
+            with c2:
+                st.button("Facebook", key="btn_edupet_fb", use_container_width=True,
+                          on_click=set_nav, args=("edupet_facebook",))
 
         st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0;'>",
                     unsafe_allow_html=True)
 
-        st.button("CSV Upload", key="btn_csv", use_container_width=True,
-                  on_click=set_nav, args=("csv_upload",))
+        c1, c2 = st.columns([1, 6])
+        with c1:
+            st.markdown(_CSV_ICON, unsafe_allow_html=True)
+        with c2:
+            st.button("CSV Upload", key="btn_csv", use_container_width=True,
+                      on_click=set_nav, args=("csv_upload",))
 
     # ── Content ──
     nav = st.session_state.nav
