@@ -47,9 +47,53 @@ def init_db(db_path: str = DEFAULT_DB):
             post_count INTEGER DEFAULT 0,
             uploaded_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS follower_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            page TEXT NOT NULL,
+            month TEXT NOT NULL,
+            followers INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL,
+            UNIQUE(platform, page, month)
+        );
     """)
     conn.commit()
     conn.close()
+
+
+def save_follower_snapshot(db_path: str, platform: str, page: str,
+                           followers: int) -> None:
+    """Sla het huidige aantal volgers op voor deze maand."""
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    conn.execute("""
+        INSERT INTO follower_snapshots (platform, page, month, followers, recorded_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(platform, page, month) DO UPDATE SET
+            followers = excluded.followers,
+            recorded_at = excluded.recorded_at
+    """, (platform, page, month, followers, now))
+    conn.commit()
+    conn.close()
+
+
+def get_follower_previous_month(db_path: str, platform: str,
+                                 page: str) -> int | None:
+    """Haal het aantal volgers van vorige maand op."""
+    now = datetime.now(timezone.utc)
+    if now.month == 1:
+        prev_month = f"{now.year - 1}-12"
+    else:
+        prev_month = f"{now.year}-{now.month - 1:02d}"
+    conn = _connect(db_path)
+    row = conn.execute(
+        "SELECT followers FROM follower_snapshots WHERE platform = ? AND page = ? AND month = ?",
+        (platform, page, prev_month),
+    ).fetchone()
+    conn.close()
+    return row["followers"] if row else None
+
 
 def insert_posts(db_path: str, posts: list[dict], platform: str,
                   page: str | None = None) -> int:

@@ -6,4 +6,6 @@ __pycache__/
 .DS_Store
 ~$*
 social_tracker.db
+social_data.db
+*.db
 .streamlit/secrets.toml

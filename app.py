@@ -7,19 +7,25 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
+from dotenv import load_dotenv
 
 from csv_import import detect_platform, parse_csv_file
 from database import (
     DEFAULT_DB,
+    get_follower_previous_month,
     get_monthly_stats,
     get_posts,
     get_uploads,
     init_db,
     insert_posts,
     log_upload,
+    save_follower_snapshot,
     update_post_labels,
 )
+
+load_dotenv()
 
 st.set_page_config(
     page_title="Prins Social Tracker",
@@ -29,6 +35,172 @@ st.set_page_config(
 
 # Init database on startup
 init_db()
+
+# ── Meta Graph API ──
+FB_API_VERSION = "v21.0"
+FB_BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
+
+BRAND_CONFIG = {
+    "prins": {
+        "token": os.getenv("PRINS_TOKEN"),
+        "page_id": os.getenv("PRINS_PAGE_ID"),
+    },
+    "edupet": {
+        "token": os.getenv("EDUPET_TOKEN"),
+        "page_id": os.getenv("EDUPET_PAGE_ID"),
+    },
+}
+
+
+@st.cache_data(ttl=3600)
+def fetch_follower_counts(brand: str) -> dict | None:
+    """Haal volgers op voor Facebook en Instagram via de Graph API."""
+    config = BRAND_CONFIG.get(brand)
+    if not config:
+        return None
+
+    token = config.get("token")
+    page_id = config.get("page_id")
+    if not token or not page_id:
+        return None
+
+    result = {"facebook": None, "instagram": None}
+
+    # Facebook followers
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/{page_id}",
+            params={"fields": "followers_count,fan_count", "access_token": token},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        result["facebook"] = data.get("followers_count") or data.get("fan_count")
+    except Exception:
+        pass
+
+    # Instagram followers via gekoppeld business account
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/{page_id}",
+            params={"fields": "instagram_business_account{followers_count}",
+                    "access_token": token},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        ig_data = resp.json()
+        ig_account = ig_data.get("instagram_business_account", {})
+        result["instagram"] = ig_account.get("followers_count")
+    except Exception:
+        pass
+
+    return result
+
+
+@st.cache_data(ttl=900)
+def sync_posts_from_api(brand: str) -> dict:
+    """Haal recente posts op via de Graph API en sla ze op in de database."""
+    config = BRAND_CONFIG.get(brand)
+    if not config:
+        return {"facebook": 0, "instagram": 0}
+
+    token = config.get("token")
+    page_id = config.get("page_id")
+    if not token or not page_id:
+        return {"facebook": 0, "instagram": 0}
+
+    result = {"facebook": 0, "instagram": 0}
+
+    # Facebook posts
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/{page_id}/published_posts",
+            params={
+                "fields": "message,created_time,shares,"
+                          "likes.summary(true),comments.summary(true),"
+                          "insights.metric(post_impressions_unique)",
+                "limit": 50,
+                "access_token": token,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        fb_posts = []
+        for post in resp.json().get("data", []):
+            likes = post.get("likes", {}).get("summary", {}).get("total_count", 0)
+            comments = post.get("comments", {}).get("summary", {}).get("total_count", 0)
+            shares = post.get("shares", {}).get("count", 0)
+            reach = 0
+            for ins in post.get("insights", {}).get("data", []):
+                if ins["name"] == "post_impressions_unique":
+                    reach = ins["values"][0]["value"]
+            fb_posts.append({
+                "date": post.get("created_time", ""),
+                "type": "Post",
+                "text": (post.get("message") or "")[:200],
+                "reach": reach,
+                "views": 0,
+                "likes": likes,
+                "comments": comments,
+                "shares": shares,
+                "clicks": 0,
+                "page": brand,
+                "source": "api",
+            })
+        if fb_posts:
+            result["facebook"] = insert_posts(DEFAULT_DB, fb_posts, "facebook")
+    except Exception:
+        pass
+
+    # Instagram posts
+    try:
+        # Haal IG business account ID op
+        resp = requests.get(
+            f"{FB_BASE_URL}/{page_id}",
+            params={"fields": "instagram_business_account",
+                    "access_token": token},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        ig_id = resp.json().get("instagram_business_account", {}).get("id")
+        if ig_id:
+            resp = requests.get(
+                f"{FB_BASE_URL}/{ig_id}/media",
+                params={
+                    "fields": "caption,timestamp,like_count,comments_count,"
+                              "media_type,insights.metric(reach)",
+                    "limit": 50,
+                    "access_token": token,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            ig_posts = []
+            for post in resp.json().get("data", []):
+                reach = 0
+                for ins in post.get("insights", {}).get("data", []):
+                    if ins["name"] == "reach":
+                        reach = ins["values"][0]["value"]
+                ig_posts.append({
+                    "date": post.get("timestamp", ""),
+                    "type": post.get("media_type", "Post"),
+                    "text": (post.get("caption") or "")[:200],
+                    "reach": reach,
+                    "views": 0,
+                    "likes": post.get("like_count", 0),
+                    "comments": post.get("comments_count", 0),
+                    "shares": 0,
+                    "clicks": 0,
+                    "page": brand,
+                    "source": "api",
+                })
+            if ig_posts:
+                result["instagram"] = insert_posts(DEFAULT_DB, ig_posts, "instagram")
+    except Exception:
+        pass
+
+    return result
+
 
 # ── Prins Petfoods huisstijl CSS ──
 st.markdown("""
@@ -134,31 +306,53 @@ st.markdown("""
         color: white;
     }
 
-    /* Sidebar radio as nav buttons */
-    [data-testid="stSidebar"] [role="radiogroup"] {
-        gap: 0.25rem;
-    }
-    [data-testid="stSidebar"] [role="radiogroup"] label {
+    /* Sidebar expanders */
+    [data-testid="stSidebar"] .streamlit-expanderHeader {
         background-color: rgba(255,255,255,0.08);
         border-radius: 0.625rem;
-        padding: 0.6rem 1rem;
-        cursor: pointer;
-        transition: background-color 0.2s;
+        color: white;
     }
-    [data-testid="stSidebar"] [role="radiogroup"] label:hover {
+    [data-testid="stSidebar"] .streamlit-expanderHeader:hover {
         background-color: rgba(255,255,255,0.15);
     }
-    [data-testid="stSidebar"] [role="radiogroup"] label[data-checked="true"],
-    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-        background-color: rgba(255,255,255,0.2);
-        font-weight: 700;
+    [data-testid="stSidebar"] .streamlit-expanderContent {
+        background-color: transparent;
+        border: none;
     }
-    /* Hide radio circles */
-    [data-testid="stSidebar"] [role="radiogroup"] input[type="radio"] {
-        display: none;
+    [data-testid="stSidebar"] [data-testid="stExpander"] {
+        background-color: transparent;
+        border: none !important;
+        box-shadow: none !important;
     }
-    [data-testid="stSidebar"] [role="radiogroup"] label div[data-testid="stMarkdownContainer"] {
-        font-size: 0.95rem;
+    [data-testid="stSidebar"] [data-testid="stExpander"] details {
+        background-color: transparent;
+        border: none !important;
+        box-shadow: none !important;
+        outline: none !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary {
+        background-color: rgba(255,255,255,0.08);
+        border-radius: 0.625rem;
+        color: white;
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+        background-color: rgba(255,255,255,0.15);
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+        background-color: transparent;
+        border: none;
+    }
+    /* Sidebar buttons */
+    [data-testid="stSidebar"] .stButton > button {
+        background-color: rgba(255,255,255,0.05);
+        color: white;
+        border: none;
+        text-align: left;
+        font-weight: 500;
+    }
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background-color: rgba(255,255,255,0.15);
+        color: white;
     }
 
     /* Caption text */
@@ -373,12 +567,29 @@ def show_channel_dashboard(platform: str, page: str):
     df_month = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") == current_month]
 
     # KPI cards
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Posts deze maand", len(df_month))
-    col2.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
+    # Volgers via API
+    followers = fetch_follower_counts(page)
+    follower_count = followers.get(platform) if followers else None
+
+    # Sla snapshot op en bereken groei
+    follower_delta = None
+    if follower_count is not None:
+        save_follower_snapshot(DEFAULT_DB, platform, page, follower_count)
+        prev = get_follower_previous_month(DEFAULT_DB, platform, page)
+        if prev is not None:
+            follower_delta = follower_count - prev
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    if follower_count is not None:
+        col1.metric("Volgers", f"{follower_count:,}",
+                     delta=f"{follower_delta:+,}" if follower_delta is not None else None)
+    else:
+        col1.metric("Volgers", "–")
+    col2.metric("Posts deze maand", len(df_month))
+    col3.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
     reach_val = df_month['reach'].mean() if len(df_month) > 0 else 0
-    col3.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
-    col4.metric("Totaal posts", len(df_all))
+    col4.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
+    col5.metric("Totaal posts", len(df_all))
 
     # Monthly trend line charts per jaar
     df_all["year"] = df_all["date_parsed"].dt.year
@@ -584,8 +795,35 @@ def show_dashboard(page: str | None = None):
                             use_container_width=True)
 
 
+def show_single_channel(platform: str, page: str):
+    """Show dashboard + posts for a single platform/page combination."""
+    # Auto-sync posts via API (gecached voor 15 min)
+    sync_posts_from_api(page)
+
+    label = page.capitalize()
+    plat_label = platform.capitalize()
+    st.markdown(f"""
+    <div style="padding: 0.5rem 0 1rem;">
+        <h2 style="color: #0d5a4d; margin-bottom: 0.25rem;">{label} — {plat_label}</h2>
+        <p style="color: #5a7a73;">{plat_label} overzicht</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    show_channel_dashboard(platform, page)
+    st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
+                unsafe_allow_html=True)
+    st.subheader("Posts")
+    show_posts_table(platform, page)
+
+
 def main():
     # ── Sidebar navigatie ──
+    if "nav" not in st.session_state:
+        st.session_state.nav = "prins_instagram"
+
+    def set_nav(value):
+        st.session_state.nav = value
+
     with st.sidebar:
         st.markdown("""
         <div style="text-align: center; padding: 1.5rem 0 1rem;">
@@ -597,30 +835,35 @@ def main():
         st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0;'>",
                     unsafe_allow_html=True)
 
-        nav = st.radio(
-            "Navigatie",
-            ["Dashboard", "Prins", "Edupet", "CSV Upload"],
-            label_visibility="collapsed",
-        )
+        with st.expander("Prins", expanded=st.session_state.nav.startswith("prins")):
+            st.button("Instagram", key="btn_prins_ig", use_container_width=True,
+                      on_click=set_nav, args=("prins_instagram",))
+            st.button("Facebook", key="btn_prins_fb", use_container_width=True,
+                      on_click=set_nav, args=("prins_facebook",))
+
+        with st.expander("Edupet", expanded=st.session_state.nav.startswith("edupet")):
+            st.button("Instagram", key="btn_edupet_ig", use_container_width=True,
+                      on_click=set_nav, args=("edupet_instagram",))
+            st.button("Facebook", key="btn_edupet_fb", use_container_width=True,
+                      on_click=set_nav, args=("edupet_facebook",))
 
         st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0;'>",
                     unsafe_allow_html=True)
 
-        # Upload shortcut info
-        st.markdown("""
-        <div style="padding: 0.5rem 0; font-size: 0.8rem; color: #a2c4ba;">
-            Upload CSV's via<br><b>CSV Upload</b>
-        </div>
-        """, unsafe_allow_html=True)
+        st.button("CSV Upload", key="btn_csv", use_container_width=True,
+                  on_click=set_nav, args=("csv_upload",))
 
     # ── Content ──
-    if nav == "Dashboard":
-        show_dashboard()
-    elif nav == "Prins":
-        show_brand_page("prins")
-    elif nav == "Edupet":
-        show_brand_page("edupet")
-    elif nav == "CSV Upload":
+    nav = st.session_state.nav
+    if nav == "prins_instagram":
+        show_single_channel("instagram", "prins")
+    elif nav == "prins_facebook":
+        show_single_channel("facebook", "prins")
+    elif nav == "edupet_instagram":
+        show_single_channel("instagram", "edupet")
+    elif nav == "edupet_facebook":
+        show_single_channel("facebook", "edupet")
+    elif nav == "csv_upload":
         show_upload_tab()
 
 

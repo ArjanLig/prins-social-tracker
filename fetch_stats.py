@@ -1,7 +1,7 @@
 """
 Social Media Tracker voor Prins Petfoods & Edupet.
-Haalt Facebook + Instagram statistieken op via de Meta Graph API
-en Facebook-posts via de Playwright scraper.
+Importeert Facebook + Instagram statistieken via CSV (Meta Business Suite)
+of via de Playwright scraper.
 Schrijft data naar het Excel tracking sheet en genereert een AI-analyse.
 """
 
@@ -10,7 +10,6 @@ import os
 import re
 from datetime import datetime, timezone
 
-import requests
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -19,12 +18,7 @@ from fb_scraper import scrape_fb_page_posts, has_session as has_fb_session
 
 load_dotenv()
 
-API = "https://graph.facebook.com/v21.0"
 EXCEL_FILE = "Social cijfers 2026 PRINS.xlsx"
-REQUEST_TIMEOUT = (5, 20)  # (connect, read) seconds
-
-# ⚠️ TIJDELIJK: Instagram uitgeschakeld tot verificatie werkt
-ENABLE_INSTAGRAM = False  # Zet op True zodra Instagram permissions werken
 
 DAGEN_NL = {
     "Monday": "Maandag", "Tuesday": "Dinsdag", "Wednesday": "Woensdag",
@@ -79,98 +73,6 @@ def dagdeel(hour: int) -> str:
         return "Middag"
     return "Avond"
 
-
-def api_get(endpoint: str, token: str, params: dict | None = None) -> dict:
-    p = {"access_token": token}
-    if params:
-        p.update(params)
-    resp = requests.get(f"{API}/{endpoint}", params=p, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
-
-
-# ─── Facebook ───────────────────────────────────────────────────────
-
-def fetch_fb_page(page_id: str, token: str) -> dict:
-    return api_get(page_id, token, {"fields": "name,fan_count,followers_count"})
-
-
-def fetch_fb_posts(page_id: str, token: str, limit: int = 25) -> list[dict]:
-    data = api_get(
-        f"{page_id}/posts", token,
-        {"fields": "message,created_time,likes.summary(true),comments.summary(true),shares",
-         "limit": limit},
-    )
-    return data.get("data", [])
-
-
-# ─── Instagram ──────────────────────────────────────────────────────
-
-def fetch_ig_profile(ig_id: str, token: str) -> dict:
-    return api_get(ig_id, token, {"fields": "followers_count,media_count,username"})
-
-
-def fetch_ig_media(ig_id: str, token: str, limit: int = 50) -> list[dict]:
-    data = api_get(
-        f"{ig_id}/media", token,
-        {"fields": "id,timestamp,media_type,like_count,comments_count,caption,permalink",
-         "limit": limit},
-    )
-    posts = data.get("data", [])
-
-    # Haal insights per post op (bereik, weergaven)
-    for post in posts:
-        try:
-            metrics = "reach,impressions"
-            if post.get("media_type") == "VIDEO":
-                metrics = "reach,impressions"
-            insights = api_get(
-                f"{post['id']}/insights", token,
-                {"metric": metrics},
-            )
-            for m in insights.get("data", []):
-                post[m["name"]] = m["values"][0]["value"]
-        except requests.HTTPError:
-            post.setdefault("reach", 0)
-            post.setdefault("impressions", 0)
-    return posts
-
-
-def fetch_ig_stories(ig_id: str, token: str) -> list[dict]:
-    try:
-        data = api_get(f"{ig_id}/stories", token, {"fields": "timestamp,media_type"})
-        stories = data.get("data", [])
-        for story in stories:
-            try:
-                insights = api_get(
-                    f"{story['id']}/insights", token,
-                    {"metric": "impressions,reach"},
-                )
-                for m in insights.get("data", []):
-                    story[m["name"]] = m["values"][0]["value"]
-            except requests.HTTPError:
-                pass
-        return stories
-    except requests.HTTPError:
-        return []
-
-
-def fetch_ig_audience(ig_id: str, token: str) -> dict | None:
-    """Audience demographics - vereist Instagram Insights permission."""
-    try:
-        data = api_get(
-            f"{ig_id}/insights", token,
-            {"metric": "follower_demographics",
-             "period": "lifetime",
-             "metric_type": "total_value",
-             "breakdown": "age"},
-        )
-        for m in data.get("data", []):
-            if m["name"] == "follower_demographics":
-                return m.get("total_value", {}).get("breakdowns", [{}])[0].get("results", [])
-    except requests.HTTPError as e:
-        print(f"  Audience demographics niet beschikbaar: {e}")
-    return None
 
 
 # ─── Excel schrijven ────────────────────────────────────────────────
@@ -274,53 +176,6 @@ def write_ig_posts(wb, posts: list[dict]):
     color_rows_by_month(ws, data_start_row=4, maand_col=19, max_col=19)
 
 
-def write_ig_kpis(wb, profile: dict, posts: list[dict], stories: list[dict],
-                  audience: list | None, prev_followers: int | None):
-    """Schrijf maandelijkse KPI's naar tab 'Instagram KPI's'."""
-    ws = wb["Instagram KPI's"]
-    now = datetime.now(timezone.utc)
-    col = MAAND_COL.get(now.month, "B")
-
-    # Filter posts van deze maand
-    month_posts = []
-    for p in posts:
-        ts = datetime.fromisoformat(p["timestamp"].replace("+0000", "+00:00")).astimezone(timezone.utc)
-        if ts.month == now.month and ts.year == now.year:
-            month_posts.append(p)
-
-    total_reach = sum(p.get("reach", 0) or 0 for p in month_posts)
-    total_impressions = sum(p.get("impressions", 0) or 0 for p in month_posts)
-    total_engagement = sum((p.get("like_count", 0) or 0) + (p.get("comments_count", 0) or 0)
-                          for p in month_posts)
-    er = (total_engagement / total_reach * 100) if total_reach > 0 else 0
-    followers = profile.get("followers_count", 0)
-    new_followers = (followers - prev_followers) if prev_followers is not None else 0
-    num_posts = len(month_posts)
-    num_stories = len(stories)
-
-    # Gemiddeld per maand (rij 4-12)
-    ws[f"{col}4"] = total_impressions       # Weergaven
-    ws[f"{col}5"] = total_reach             # Bereik
-    ws[f"{col}6"] = total_engagement        # Engagement
-    ws[f"{col}7"] = round(er, 2)            # ER
-    ws[f"{col}8"] = followers               # Volgers
-    ws[f"{col}9"] = new_followers           # Nieuwe volgers
-    ws[f"{col}10"] = num_posts              # Aantal posts
-    ws[f"{col}11"] = num_stories            # Aantal story's
-
-    # Gem leeftijd doelgroep
-    if audience:
-        top = sorted(audience, key=lambda x: x.get("value", 0), reverse=True)
-        if top:
-            ws[f"{col}12"] = top[0].get("dimension_values", [""])[0]
-
-    # Gemiddeld per post (rij 15-18)
-    if num_posts > 0:
-        ws[f"{col}15"] = round(total_impressions / num_posts)
-        ws[f"{col}16"] = round(total_reach / num_posts)
-        ws[f"{col}17"] = round(total_engagement / num_posts)
-        ws[f"{col}18"] = round(er, 2)
-
 
 def write_fb_posts(wb, posts: list[dict]):
     """Schrijf Facebook posts (van scraper) naar tab 'Facebook cijfers'."""
@@ -415,7 +270,7 @@ def write_fb_posts(wb, posts: list[dict]):
     return appended
 
 
-def write_fb_kpis(wb, page_info: dict, posts: list[dict]):
+def write_fb_kpis(wb, posts: list[dict]):
     """Schrijf maandelijkse Facebook KPI's naar tab 'Facebook KPIs'."""
     ws = wb["Facebook KPIs"]
     now = datetime.now(timezone.utc)
@@ -431,58 +286,21 @@ def write_fb_kpis(wb, page_info: dict, posts: list[dict]):
         if ts.month == now.month and ts.year == now.year:
             month_posts.append(p)
 
-    fans = page_info.get("fan_count", 0) or page_info.get("likes", 0) or 0
-    followers = page_info.get("followers_count", 0) or page_info.get("followers", 0) or 0
     total_engagement = sum(
         p.get("likes", 0) + p.get("comments", 0) + p.get("shares", 0)
         for p in month_posts
     )
     num_posts = len(month_posts)
 
-    if fans:
-        ws[f"{col}3"] = fans               # Fans
-    if followers:
-        ws[f"{col}4"] = followers           # Volgers
-    # Weergaven (5) en Bereik (6) — niet beschikbaar via scraper
     ws[f"{col}7"] = total_engagement        # Engagement
     ws[f"{col}8"] = num_posts               # Aantal posts
 
 
-def write_followers(wb, prins_fb: dict, prins_ig: dict,
-                    edupet_fb: dict):
-    """Update de volgers sectie op de KPI's tab."""
-    ws = wb["Instagram KPI's"]
-    now = datetime.now(timezone.utc)
-    col = MAAND_COL.get(now.month, "B")
-
-    # Prins (rij 21-24)
-    ws[f"{col}21"] = prins_ig.get("followers_count", 0)
-    ws[f"{col}22"] = prins_fb.get("followers_count", 0)
-    # TikTok (rij 23) en LinkedIn (rij 24) = handmatig
-
-    # Edupet (rij 27-29)
-    ws[f"{col}28"] = edupet_fb.get("followers_count", 0)
-    # LinkedIn (rij 29) = handmatig
-
-
-def get_prev_followers(wb) -> int | None:
-    """Haal vorige maand volgers op uit KPI tab."""
-    ws = wb["Instagram KPI's"]
-    now = datetime.now(timezone.utc)
-    prev_month = now.month - 1 if now.month > 1 else 12
-    col = MAAND_COL.get(prev_month)
-    if col:
-        val = ws[f"{col}8"].value
-        if isinstance(val, (int, float)):
-            return int(val)
-    return None
-
 
 # ─── AI Analyse ─────────────────────────────────────────────────────
 
-def collect_summary(prins_fb: dict, edupet_fb: dict, prins_fb_posts: list[dict],
-                    edupet_fb_posts: list[dict],
-                    prins_ig: dict, ig_posts: list[dict], ig_stories: list[dict]) -> str:
+def collect_summary(prins_fb_posts: list[dict], edupet_fb_posts: list[dict],
+                    ig_posts: list[dict]) -> str:
     """Verzamel alle opgehaalde data in een gestructureerde tekst-samenvatting."""
     now = datetime.now(timezone.utc)
     lines = [f"=== Social Media Data Prins Petfoods — {now.strftime('%d-%m-%Y')} ===\n"]
@@ -519,89 +337,86 @@ def collect_summary(prins_fb: dict, edupet_fb: dict, prins_fb_posts: list[dict],
 
     # Facebook Prins
     lines.append("## Facebook — Prins Petfoods")
-    lines.append(f"- Fans: {prins_fb.get('fan_count', '?')}")
-    lines.append(f"- Volgers: {prins_fb.get('followers_count', '?')}")
     _fb_post_summary(prins_fb_posts, "Prins")
 
     # Facebook Edupet
     lines.append("\n## Facebook — Edupet")
-    lines.append(f"- Fans: {edupet_fb.get('fan_count', '?')}")
-    lines.append(f"- Volgers: {edupet_fb.get('followers_count', '?')}")
     _fb_post_summary(edupet_fb_posts, "Edupet")
 
     # Instagram Prins
-    lines.append("\n## Instagram — Prins Petfoods")
-    if prins_ig or ig_posts:
-        if prins_ig:
-            lines.append(f"- Volgers: {prins_ig.get('followers_count', '?')}")
-            lines.append(f"- Totaal posts: {prins_ig.get('media_count', '?')}")
+    if ig_posts:
+        lines.append("\n## Instagram — Prins Petfoods")
 
-        if ig_posts:
-            # Filter deze maand
-            month_posts = []
-            for p in ig_posts:
-                ts = datetime.fromisoformat(p["timestamp"].replace("+0000", "+00:00"))
-                if ts.month == now.month and ts.year == now.year:
-                    month_posts.append(p)
+        # Normaliseer veldnamen (CSV gebruikt andere keys)
+        for p in ig_posts:
+            if "timestamp" not in p and "date" in p:
+                p["timestamp"] = p["date"]
+            if "like_count" not in p and "likes" in p:
+                p["like_count"] = p["likes"]
+            if "comments_count" not in p and "comments" in p:
+                p["comments_count"] = p["comments"]
+            if "media_type" not in p and "type" in p:
+                p["media_type"] = p["type"]
+            if "caption" not in p and "text" in p:
+                p["caption"] = p["text"]
 
-            lines.append(f"- Posts deze maand: {len(month_posts)}")
-            total_reach = sum(p.get("reach", 0) or 0 for p in month_posts)
-            total_impressions = sum(p.get("impressions", 0) or 0 for p in month_posts)
-            total_likes = sum(p.get("like_count", 0) or 0 for p in month_posts)
-            total_comments = sum(p.get("comments_count", 0) or 0 for p in month_posts)
-            total_eng = total_likes + total_comments
-            er = (total_eng / total_reach * 100) if total_reach > 0 else 0
-            lines.append(f"- Totaal bereik deze maand: {total_reach}")
-            lines.append(f"- Totaal weergaven deze maand: {total_impressions}")
-            lines.append(f"- Totaal likes: {total_likes}, reacties: {total_comments}")
-            lines.append(f"- Engagement rate: {er:.2f}%%")
+        # Filter deze maand
+        month_posts = []
+        for p in ig_posts:
+            ts = datetime.fromisoformat(p["timestamp"].replace("+0000", "+00:00"))
+            if ts.month == now.month and ts.year == now.year:
+                month_posts.append(p)
 
-            # Top posts op engagement
-            sorted_posts = sorted(month_posts, key=lambda p: (p.get("like_count", 0) or 0) + (p.get("comments_count", 0) or 0), reverse=True)
-            if sorted_posts:
-                lines.append("\n### Top posts (hoogste engagement):")
-                for i, p in enumerate(sorted_posts[:5], 1):
-                    caption = (p.get("caption") or "(geen caption)")[:80]
-                    likes = p.get("like_count", 0) or 0
-                    comments = p.get("comments_count", 0) or 0
-                    reach = p.get("reach", 0) or 0
-                    ts = p.get("timestamp", "")[:10]
-                    mtype = p.get("media_type", "?")
-                    lines.append(f"  {i}. ({ts}, {mtype}) {likes} likes, {comments} reacties, bereik {reach} — \"{caption}\"")
+        lines.append(f"- Posts deze maand: {len(month_posts)}")
+        total_reach = sum(p.get("reach", 0) or 0 for p in month_posts)
+        total_impressions = sum(p.get("impressions", 0) or 0 for p in month_posts)
+        total_likes = sum(p.get("like_count", 0) or 0 for p in month_posts)
+        total_comments = sum(p.get("comments_count", 0) or 0 for p in month_posts)
+        total_eng = total_likes + total_comments
+        er = (total_eng / total_reach * 100) if total_reach > 0 else 0
+        lines.append(f"- Totaal bereik deze maand: {total_reach}")
+        lines.append(f"- Totaal weergaven deze maand: {total_impressions}")
+        lines.append(f"- Totaal likes: {total_likes}, reacties: {total_comments}")
+        lines.append(f"- Engagement rate: {er:.2f}%%")
 
-            # Flop posts
-            if len(sorted_posts) > 3:
-                lines.append("\n### Minst presterende posts:")
-                for i, p in enumerate(sorted_posts[-3:], 1):
-                    caption = (p.get("caption") or "(geen caption)")[:80]
-                    likes = p.get("like_count", 0) or 0
-                    comments = p.get("comments_count", 0) or 0
-                    reach = p.get("reach", 0) or 0
-                    ts = p.get("timestamp", "")[:10]
-                    mtype = p.get("media_type", "?")
-                    lines.append(f"  {i}. ({ts}, {mtype}) {likes} likes, {comments} reacties, bereik {reach} — \"{caption}\"")
+        # Top posts op engagement
+        sorted_posts = sorted(month_posts, key=lambda p: (p.get("like_count", 0) or 0) + (p.get("comments_count", 0) or 0), reverse=True)
+        if sorted_posts:
+            lines.append("\n### Top posts (hoogste engagement):")
+            for i, p in enumerate(sorted_posts[:5], 1):
+                caption = (p.get("caption") or "(geen caption)")[:80]
+                likes = p.get("like_count", 0) or 0
+                comments = p.get("comments_count", 0) or 0
+                reach = p.get("reach", 0) or 0
+                ts = p.get("timestamp", "")[:10]
+                mtype = p.get("media_type", "?")
+                lines.append(f"  {i}. ({ts}, {mtype}) {likes} likes, {comments} reacties, bereik {reach} — \"{caption}\"")
 
-            # Posting patronen
-            dag_counts = {}
-            dagdeel_counts = {}
-            for p in month_posts:
-                ts = datetime.fromisoformat(p["timestamp"].replace("+0000", "+00:00"))
-                dag = DAGEN_NL.get(ts.strftime("%A"), ts.strftime("%A"))
-                dag_counts[dag] = dag_counts.get(dag, 0) + 1
-                dd = dagdeel(ts.hour)
-                dagdeel_counts[dd] = dagdeel_counts.get(dd, 0) + 1
-            if dag_counts:
-                lines.append(f"\n### Posting patronen:")
-                lines.append(f"  Dagen: {dag_counts}")
-                lines.append(f"  Dagdelen: {dagdeel_counts}")
+        # Flop posts
+        if len(sorted_posts) > 3:
+            lines.append("\n### Minst presterende posts:")
+            for i, p in enumerate(sorted_posts[-3:], 1):
+                caption = (p.get("caption") or "(geen caption)")[:80]
+                likes = p.get("like_count", 0) or 0
+                comments = p.get("comments_count", 0) or 0
+                reach = p.get("reach", 0) or 0
+                ts = p.get("timestamp", "")[:10]
+                mtype = p.get("media_type", "?")
+                lines.append(f"  {i}. ({ts}, {mtype}) {likes} likes, {comments} reacties, bereik {reach} — \"{caption}\"")
 
-        if ig_stories:
-            lines.append(f"\n- Stories: {len(ig_stories)} actieve stories")
-            total_story_reach = sum(s.get("reach", 0) or 0 for s in ig_stories)
-            total_story_impr = sum(s.get("impressions", 0) or 0 for s in ig_stories)
-            lines.append(f"- Stories bereik: {total_story_reach}, weergaven: {total_story_impr}")
-    else:
-        lines.append("- Instagram data niet beschikbaar (uitgeschakeld of geen permissions)")
+        # Posting patronen
+        dag_counts = {}
+        dagdeel_counts = {}
+        for p in month_posts:
+            ts = datetime.fromisoformat(p["timestamp"].replace("+0000", "+00:00"))
+            dag = DAGEN_NL.get(ts.strftime("%A"), ts.strftime("%A"))
+            dag_counts[dag] = dag_counts.get(dag, 0) + 1
+            dd = dagdeel(ts.hour)
+            dagdeel_counts[dd] = dagdeel_counts.get(dd, 0) + 1
+        if dag_counts:
+            lines.append(f"\n### Posting patronen:")
+            lines.append(f"  Dagen: {dag_counts}")
+            lines.append(f"  Dagdelen: {dagdeel_counts}")
 
     return "\n".join(lines)
 
@@ -700,44 +515,14 @@ def main():
                         help="Map met CSV exports uit Meta Business Suite")
     args = parser.parse_args()
 
-    prins_token = os.getenv("PRINS_TOKEN")
-    edupet_token = os.getenv("EDUPET_TOKEN")
-    prins_page_id = os.getenv("PRINS_PAGE_ID")
-    prins_ig_id = os.getenv("PRINS_IG_ID")
-    edupet_page_id = os.getenv("EDUPET_PAGE_ID")
-
-    required = {
-        "PRINS_TOKEN": prins_token,
-        "EDUPET_TOKEN": edupet_token,
-        "PRINS_PAGE_ID": prins_page_id,
-        "EDUPET_PAGE_ID": edupet_page_id,
-    }
-
-    # PRINS_IG_ID alleen verplicht als Instagram enabled is
-    if ENABLE_INSTAGRAM:
-        required["PRINS_IG_ID"] = prins_ig_id
-
-    if not args.csv:
-        missing = [k for k, v in required.items() if not v]
-        if missing:
-            print("Ontbrekende environment variabelen:")
-            for key in missing:
-                print(f"  - {key}")
-            raise SystemExit(1)
-
     wb = load_workbook(EXCEL_FILE)
 
-    # ── CSV Import (primair) ──
     prins_fb_posts = []
     edupet_fb_posts = []
     ig_posts = []
-    prins_fb = {"name": "Prins Petfoods"}
-    edupet_fb = {"name": "Edupet"}
-    prins_ig = {}
-    ig_stories = []
-    audience = None
 
     if args.csv:
+        # ── CSV Import (primair) ──
         from csv_import import parse_csv_folder
         print(f"\nCSV import uit: {args.csv}")
         csv_data = parse_csv_folder(args.csv)
@@ -756,75 +541,20 @@ def main():
             print(f"  → Prins IG: {len(ig_posts)} posts uit {ig_file['file']}")
 
     else:
-        # ── Facebook (API voor volgers) ──
-        print("Facebook: Prins Petfoods...")
-        try:
-            prins_fb = fetch_fb_page(prins_page_id, prins_token)
-            print(f"  {prins_fb.get('name')}: {prins_fb.get('fan_count')} fans, "
-                  f"{prins_fb.get('followers_count')} volgers")
-        except (requests.HTTPError, requests.ConnectionError) as e:
-            print(f"  API niet beschikbaar: {e}")
-            prins_fb = {"name": "Prins Petfoods"}
-
-        print("Facebook: Edupet...")
-        try:
-            edupet_fb = fetch_fb_page(edupet_page_id, edupet_token)
-            print(f"  {edupet_fb.get('name')}: {edupet_fb.get('fan_count')} fans, "
-                  f"{edupet_fb.get('followers_count')} volgers")
-        except (requests.HTTPError, requests.ConnectionError) as e:
-            print(f"  API niet beschikbaar: {e}")
-            edupet_fb = {"name": "Edupet"}
-
+        # ── Scraper ──
         print("Facebook posts: Prins (scraper)...")
-        prins_fb_posts = []
         if has_fb_session():
             result = scrape_fb_page_posts("PrinsPetfoods", max_posts=25, max_scrolls=10)
             prins_fb_posts = result.get("posts", [])
-            # Update page info met scraper-data als API data ontbreekt
-            scraper_info = result.get("page_info", {})
-            if scraper_info.get("followers") and not prins_fb.get("followers_count"):
-                prins_fb["followers_count"] = scraper_info["followers"]
             print(f"  {len(prins_fb_posts)} posts opgehaald via scraper")
         else:
             print("  Geen Facebook-sessie. Draai eerst: python3 fb_scraper.py --login")
 
         print("Facebook posts: Edupet (scraper)...")
-        edupet_fb_posts = []
         if has_fb_session():
             result = scrape_fb_page_posts("edupet", max_posts=25, max_scrolls=10)
             edupet_fb_posts = result.get("posts", [])
-            scraper_info = result.get("page_info", {})
-            if scraper_info.get("followers") and not edupet_fb.get("followers_count"):
-                edupet_fb["followers_count"] = scraper_info["followers"]
             print(f"  {len(edupet_fb_posts)} posts opgehaald via scraper")
-
-        # ── Instagram ──
-        if ENABLE_INSTAGRAM:
-            print("Instagram: Prins profiel...")
-            try:
-                prins_ig = fetch_ig_profile(prins_ig_id, prins_token)
-                print(f"  @{prins_ig.get('username')}: {prins_ig.get('followers_count')} volgers, "
-                      f"{prins_ig.get('media_count')} posts")
-            except requests.HTTPError as e:
-                print(f"  Overgeslagen (permission nodig: instagram_basic): {e}")
-
-            if prins_ig:
-                print("Instagram: Prins media...")
-                try:
-                    ig_posts = fetch_ig_media(prins_ig_id, prins_token)
-                    print(f"  {len(ig_posts)} posts opgehaald")
-                except requests.HTTPError as e:
-                    print(f"  Overgeslagen: {e}")
-
-                print("Instagram: Prins stories...")
-                ig_stories = fetch_ig_stories(prins_ig_id, prins_token)
-                print(f"  {len(ig_stories)} stories opgehaald")
-
-                print("Instagram: Audience demographics...")
-                audience = fetch_ig_audience(prins_ig_id, prins_token)
-        else:
-            print("Instagram: Overgeslagen (ENABLE_INSTAGRAM = False)")
-            print("  Zet ENABLE_INSTAGRAM = True zodra Instagram permissions werken")
 
     # ── Scraper aanvullen als CSV primair is ──
     if args.csv and has_fb_session():
@@ -835,25 +565,15 @@ def main():
             prins_fb_posts = merge_scraper_data(prins_fb_posts, scraper_posts)
             print(f"  V {len(scraper_posts)} scraper posts gemerged met Prins FB")
 
-    # ── Vorige volgers ──
-    prev_followers = get_prev_followers(wb)
-
     # ── Schrijf naar Excel ──
     print("\nSchrijven naar Excel...")
     if ig_posts:
         write_ig_posts(wb, ig_posts)
         print("  V Instagram posts geschreven")
-    if prins_ig and ENABLE_INSTAGRAM:
-        write_ig_kpis(wb, prins_ig, ig_posts, ig_stories, audience, prev_followers)
-        print("  V Instagram KPI's geschreven")
-
-    if not args.csv:
-        write_followers(wb, prins_fb, prins_ig, edupet_fb)
-        print("  V Volgers statistieken geschreven")
 
     if prins_fb_posts:
         n = write_fb_posts(wb, prins_fb_posts)
-        write_fb_kpis(wb, prins_fb, prins_fb_posts)
+        write_fb_kpis(wb, prins_fb_posts)
         print(f"  V Facebook Prins posts geschreven ({n} nieuwe)")
         print("  V Facebook Prins KPI's geschreven")
 
@@ -864,15 +584,10 @@ def main():
     wb.save(EXCEL_FILE)
     print(f"\nOpgeslagen in {EXCEL_FILE}")
 
-    if not ENABLE_INSTAGRAM and not args.csv:
-        print("\nInstagram data is overgeslagen")
-        print("    Zet ENABLE_INSTAGRAM = True zodra verificatie werkt")
-
     # ── AI Analyse ──
     if not args.no_analysis:
         print("\n🤖 AI-analyse genereren...\n")
-        summary = collect_summary(prins_fb, edupet_fb, prins_fb_posts,
-                                  edupet_fb_posts, prins_ig, ig_posts, ig_stories)
+        summary = collect_summary(prins_fb_posts, edupet_fb_posts, ig_posts)
         analysis = analyze_with_ai(summary)
         print("=" * 60)
         print("  SOCIAL MEDIA ANALYSE — Prins Petfoods")
