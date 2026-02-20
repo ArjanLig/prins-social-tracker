@@ -153,7 +153,15 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
             ))
             inserted += 1
         except sqlite3.IntegrityError:
-            pass  # duplicate, skip
+            # Update reach/impressions if they were 0
+            views = p.get("views", 0) or 0
+            if reach > 0 or views > 0:
+                conn.execute("""
+                    UPDATE posts SET reach = ?, impressions = ?
+                    WHERE platform = ? AND page = ? AND date = ? AND text = ?
+                    AND reach = 0 AND impressions = 0
+                """, (reach, views, platform, post_page,
+                      p.get("date", ""), p.get("text", "")))
     conn.commit()
     conn.close()
     return inserted

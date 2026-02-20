@@ -45,6 +45,144 @@ st.markdown("""
 # ── Meta Graph API ──
 FB_API_VERSION = "v21.0"
 FB_BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
+META_APP_ID = os.getenv("META_APP_ID", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+
+ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+
+
+def _check_token(token: str) -> bool:
+    """Check of een token nog geldig is."""
+    if not token:
+        return False
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/debug_token",
+            params={"input_token": token, "access_token": token},
+            timeout=10, verify=False,
+        )
+        data = resp.json().get("data", {})
+        return data.get("is_valid", False)
+    except Exception:
+        return False
+
+
+def _exchange_for_long_lived(short_token: str) -> str | None:
+    """Wissel een short-lived user token in voor een long-lived token."""
+    if not META_APP_ID or not META_APP_SECRET:
+        return None
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/oauth/access_token",
+            params={
+                "grant_type": "fb_exchange_token",
+                "client_id": META_APP_ID,
+                "client_secret": META_APP_SECRET,
+                "fb_exchange_token": short_token,
+            },
+            timeout=10, verify=False,
+        )
+        resp.raise_for_status()
+        return resp.json().get("access_token")
+    except Exception:
+        return None
+
+
+def _get_permanent_page_tokens(user_token: str) -> dict:
+    """Haal permanente page tokens op via me/accounts.
+
+    Returns dict: {page_id: {"token": ..., "name": ...}}
+    """
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/me/accounts",
+            params={"access_token": user_token,
+                    "fields": "id,name,access_token"},
+            timeout=10, verify=False,
+        )
+        resp.raise_for_status()
+        pages = {}
+        for page in resp.json().get("data", []):
+            pages[page["id"]] = {
+                "token": page["access_token"],
+                "name": page.get("name", ""),
+            }
+        return pages
+    except Exception:
+        return {}
+
+
+def _update_env(key: str, value: str):
+    """Update of voeg een key toe in het .env bestand."""
+    lines = []
+    found = False
+    if os.path.exists(ENV_PATH):
+        with open(ENV_PATH, "r") as f:
+            lines = f.readlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}\n")
+    with open(ENV_PATH, "w") as f:
+        f.writelines(lines)
+
+
+def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
+    """Vernieuw alle tokens vanuit een user token.
+
+    1. Wissel in voor long-lived token
+    2. Haal permanente page tokens op
+    3. Sla op in .env
+    Returns (success, message)
+    """
+    # Stap 1: long-lived token
+    long_lived = _exchange_for_long_lived(user_token)
+    if not long_lived:
+        # Probeer direct als het al long-lived is
+        long_lived = user_token
+
+    # Stap 2: page tokens ophalen
+    pages = _get_permanent_page_tokens(long_lived)
+    if not pages:
+        return False, "Kon geen page tokens ophalen. Controleer of het token de juiste permissies heeft."
+
+    # Stap 3: opslaan in .env
+    _update_env("USER_TOKEN", long_lived)
+
+    prins_page_id = os.getenv("PRINS_PAGE_ID", "")
+    edupet_page_id = os.getenv("EDUPET_PAGE_ID", "")
+    updated = []
+
+    if prins_page_id in pages:
+        _update_env("PRINS_TOKEN", pages[prins_page_id]["token"])
+        updated.append(f"Prins ({pages[prins_page_id]['name']})")
+    if edupet_page_id in pages:
+        _update_env("EDUPET_TOKEN", pages[edupet_page_id]["token"])
+        updated.append(f"Edupet ({pages[edupet_page_id]['name']})")
+
+    if not updated:
+        return False, f"Page ID's niet gevonden. Beschikbare pages: {', '.join(p['name'] for p in pages.values())}"
+
+    return True, f"Tokens vernieuwd voor: {', '.join(updated)}"
+
+
+# ── Auto token refresh bij opstarten ──
+_prins_token = os.getenv("PRINS_TOKEN", "")
+_tokens_valid = _check_token(_prins_token) if _prins_token else False
+
+if not _tokens_valid:
+    # Probeer automatisch te vernieuwen via user token
+    _user_token = os.getenv("USER_TOKEN", "")
+    if _user_token and META_APP_ID and META_APP_SECRET:
+        _success, _msg = refresh_all_tokens(_user_token)
+        if _success:
+            # Herlaad de vernieuwde tokens uit .env
+            load_dotenv(override=True)
+            _prins_token = os.getenv("PRINS_TOKEN", "")
+            _tokens_valid = _check_token(_prins_token) if _prins_token else False
 
 BRAND_CONFIG = {
     "prins": {
@@ -163,7 +301,8 @@ def sync_posts_from_api(brand: str) -> dict:
             f"{FB_BASE_URL}/{page_id}/published_posts",
             params={
                 "fields": "message,created_time,shares,"
-                          "likes.summary(true),comments.summary(true)",
+                          "likes.summary(true),comments.summary(true),"
+                          "insights.metric(post_impressions,post_impressions_unique)",
                 "limit": 10,
                 "access_token": token,
             },
@@ -175,12 +314,21 @@ def sync_posts_from_api(brand: str) -> dict:
             likes = post.get("likes", {}).get("summary", {}).get("total_count", 0)
             comments = post.get("comments", {}).get("summary", {}).get("total_count", 0)
             shares = post.get("shares", {}).get("count", 0)
+            # Extract reach & impressions from insights
+            reach = 0
+            impressions = 0
+            for insight in post.get("insights", {}).get("data", []):
+                val = insight.get("values", [{}])[0].get("value", 0)
+                if insight.get("name") == "post_impressions_unique":
+                    reach = val
+                elif insight.get("name") == "post_impressions":
+                    impressions = val
             fb_posts.append({
                 "date": post.get("created_time", "").replace("+0000", ""),
                 "type": "Post",
                 "text": (post.get("message") or "")[:200],
-                "reach": 0,
-                "views": 0,
+                "reach": reach,
+                "views": impressions,
                 "likes": likes,
                 "comments": comments,
                 "shares": shares,
@@ -217,12 +365,35 @@ def sync_posts_from_api(brand: str) -> dict:
             resp.raise_for_status()
             ig_posts = []
             for post in resp.json().get("data", []):
+                # Fetch insights per post for reach & impressions
+                post_reach = 0
+                post_impressions = 0
+                post_id = post.get("id")
+                if post_id:
+                    try:
+                        ins_resp = requests.get(
+                            f"{FB_BASE_URL}/{post_id}/insights",
+                            params={
+                                "metric": "impressions,reach",
+                                "access_token": token,
+                            },
+                            timeout=10, verify=False,
+                        )
+                        ins_resp.raise_for_status()
+                        for m in ins_resp.json().get("data", []):
+                            val = m.get("values", [{}])[0].get("value", 0)
+                            if m.get("name") == "reach":
+                                post_reach = val
+                            elif m.get("name") == "impressions":
+                                post_impressions = val
+                    except Exception:
+                        pass
                 ig_posts.append({
                     "date": post.get("timestamp", "").replace("+0000", ""),
                     "type": post.get("media_type", "Post"),
                     "text": (post.get("caption") or "")[:200],
-                    "reach": 0,
-                    "views": 0,
+                    "reach": post_reach,
+                    "views": post_impressions,
                     "likes": post.get("like_count", 0),
                     "comments": post.get("comments_count", 0),
                     "shares": 0,
@@ -690,10 +861,44 @@ def show_channel_dashboard(platform: str, page: str):
             col1.metric("Volgers", f"{follower_count:,}")
     else:
         col1.metric("Volgers", "–")
-    col2.metric("Posts deze maand", len(df_month))
-    col3.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
-    reach_val = df_month['reach'].mean() if len(df_month) > 0 else 0
-    col4.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
+    posts_this_month = len(df_month)
+    df_prev_months = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") != current_month]
+    prev_monthly_counts = df_prev_months.groupby(df_prev_months["date_parsed"].dt.strftime("%Y-%m")).size()
+    posts_delta_str = None
+    if len(prev_monthly_counts) > 0:
+        avg_posts = prev_monthly_counts.mean()
+        diff = posts_this_month - avg_posts
+        arrow = "↑" if diff >= 0 else "↓"
+        posts_delta_str = f"{arrow} {diff:+.0f} vs. gem."
+    col2.metric("Posts deze maand", posts_this_month, delta=posts_delta_str)
+    impressions_per_post = df_month['impressions'].mean() if len(df_month) > 0 else 0
+    impressions_delta_str = None
+    if len(df_prev_months) > 0:
+        prev_imp_per_post = df_prev_months.groupby(
+            df_prev_months["date_parsed"].dt.strftime("%Y-%m")
+        )['impressions'].mean()
+        if len(prev_imp_per_post) > 0:
+            avg_imp = prev_imp_per_post.mean()
+            diff = impressions_per_post - avg_imp
+            arrow = "↑" if diff >= 0 else "↓"
+            impressions_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
+    col3.metric("Gem. weergaven/post (deze maand)",
+                f"{impressions_per_post:,.0f}" if pd.notna(impressions_per_post) else "0",
+                delta=impressions_delta_str)
+    reach_per_post = df_month['reach'].mean() if len(df_month) > 0 else 0
+    reach_delta_str = None
+    if len(df_prev_months) > 0:
+        prev_reach_per_post = df_prev_months.groupby(
+            df_prev_months["date_parsed"].dt.strftime("%Y-%m")
+        )['reach'].mean()
+        if len(prev_reach_per_post) > 0:
+            avg_reach = prev_reach_per_post.mean()
+            diff = reach_per_post - avg_reach
+            arrow = "↑" if diff >= 0 else "↓"
+            reach_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
+    col4.metric("Gem. bereik/post (deze maand)",
+                f"{reach_per_post:,.0f}" if pd.notna(reach_per_post) else "0",
+                delta=reach_delta_str)
 
     # Engagement Rate deze maand vs. langlopend gemiddelde
     er_current = None
@@ -1022,6 +1227,32 @@ def main():
         with c2:
             st.button("CSV Upload", key="btn_csv", use_container_width=True,
                       on_click=set_nav, args=("csv_upload",))
+
+        # ── Token status ──
+        st.markdown("<hr style='border-color: #1a7a6a; margin: 1.5rem 0 0.5rem;'>",
+                    unsafe_allow_html=True)
+
+        if _tokens_valid:
+            st.markdown("🟢 <span style='font-size:0.75rem; color:#4CAF50;'>API verbonden</span>",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown("🔴 <span style='font-size:0.75rem; color:#e53935;'>Token verlopen</span>",
+                        unsafe_allow_html=True)
+            new_token = st.text_input(
+                "User Token",
+                type="password",
+                placeholder="Plak hier je nieuwe token",
+            )
+            if st.button("Vernieuwen", key="btn_refresh_token", use_container_width=True):
+                if new_token:
+                    success, msg = refresh_all_tokens(new_token)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                else:
+                    st.warning("Plak eerst een token.")
 
     # ── Content ──
     nav = st.session_state.nav
