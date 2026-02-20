@@ -694,7 +694,32 @@ def show_channel_dashboard(platform: str, page: str):
     col3.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
     reach_val = df_month['reach'].mean() if len(df_month) > 0 else 0
     col4.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
-    col5.metric("Totaal posts", len(df_all))
+
+    # Engagement Rate deze maand vs. langlopend gemiddelde
+    er_current = None
+    er_avg = None
+    if len(df_month) > 0 and follower_count and follower_count > 0:
+        er_current = (df_month['engagement'].sum() / len(df_month)) / follower_count * 100
+
+        # Langlopend gemiddelde: alle voorgaande maanden (excl. huidige)
+        df_prev = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") != current_month]
+        if len(df_prev) > 0:
+            prev_months = df_prev.groupby(df_prev["date_parsed"].dt.strftime("%Y-%m"))
+            monthly_ers = []
+            for _, grp in prev_months:
+                monthly_ers.append((grp['engagement'].sum() / len(grp)) / follower_count * 100)
+            if monthly_ers:
+                er_avg = sum(monthly_ers) / len(monthly_ers)
+
+    if er_current is not None:
+        er_delta_str = None
+        if er_avg is not None:
+            diff = er_current - er_avg
+            arrow = "↑" if diff >= 0 else "↓"
+            er_delta_str = f"{arrow} {diff:+.2f}% vs. gem."
+        col5.metric("Engagement Rate (deze maand)", f"{er_current:.2f}%", delta=er_delta_str)
+    else:
+        col5.metric("Engagement Rate (deze maand)", "–")
 
     # Monthly trend line charts per jaar
     df_all["year"] = df_all["date_parsed"].dt.year
