@@ -5,7 +5,5 @@ __pycache__/
 .fb_session/
 .DS_Store
 ~$*
-social_tracker.db
 social_data.db
-*.db
 .streamlit/secrets.toml
