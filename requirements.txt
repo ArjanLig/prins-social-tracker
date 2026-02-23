@@ -4,3 +4,4 @@ openpyxl
 plotly
 requests
 python-dotenv
+openai

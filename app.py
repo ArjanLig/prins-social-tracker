@@ -33,6 +33,7 @@ from database import (
     save_follower_snapshot,
     update_post_labels,
 )
+import ai_insights
 
 
 def _get_secret(key: str, default: str = "") -> str:
@@ -1278,10 +1279,226 @@ def show_single_channel(platform: str, page: str):
     """, unsafe_allow_html=True)
 
     show_channel_dashboard(platform, page)
+
+    # ── AI Inzichten (boven posts) ──
+    st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
+                unsafe_allow_html=True)
+    with st.expander("AI Inzichten", expanded=False):
+        ai_key = f"{page}_{platform}_ai"
+        now = datetime.now(timezone.utc)
+        current_month = now.strftime("%Y-%m")
+        posts = get_posts(platform=platform, page=page)
+        follower_count = get_follower_count(DEFAULT_DB, platform, page, current_month)
+
+        tab_analyse, tab_rapport, tab_suggesties, tab_chat = st.tabs(
+            ["Analyse", "Maandrapport", "Content suggesties", "Chat"]
+        )
+
+        with tab_analyse:
+            if st.button("Genereer analyse", key=f"{ai_key}_analyse_btn"):
+                with st.spinner("AI analyseert..."):
+                    result = _ai_analyze_posts(
+                        tuple(p.get("id", i) for i, p in enumerate(posts)),
+                        platform, page, follower_count,
+                    )
+                    st.session_state[f"{ai_key}_analyse"] = result
+            if f"{ai_key}_analyse" in st.session_state:
+                st.markdown(st.session_state[f"{ai_key}_analyse"])
+
+        with tab_rapport:
+            if st.button("Genereer maandrapport", key=f"{ai_key}_rapport_btn"):
+                with st.spinner("AI schrijft rapport..."):
+                    result = _ai_monthly_report(
+                        tuple(p.get("id", i) for i, p in enumerate(posts)),
+                        platform, page, current_month, follower_count,
+                    )
+                    st.session_state[f"{ai_key}_rapport"] = result
+            if f"{ai_key}_rapport" in st.session_state:
+                st.markdown(st.session_state[f"{ai_key}_rapport"])
+
+        with tab_suggesties:
+            if st.button("Genereer suggesties", key=f"{ai_key}_suggesties_btn"):
+                with st.spinner("AI bedenkt content..."):
+                    result = _ai_suggest_content(
+                        tuple(p.get("id", i) for i, p in enumerate(posts)),
+                        platform, page, follower_count,
+                    )
+                    st.session_state[f"{ai_key}_suggesties"] = result
+            if f"{ai_key}_suggesties" in st.session_state:
+                st.markdown(st.session_state[f"{ai_key}_suggesties"])
+
+        with tab_chat:
+            chat_key = f"{ai_key}_chat"
+            if chat_key not in st.session_state:
+                st.session_state[chat_key] = []
+
+            # Chat history weergeven
+            for msg in st.session_state[chat_key]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            # Chat input
+            if prompt := st.chat_input("Stel een vraag over de data...",
+                                       key=f"{chat_key}_input"):
+                st.session_state[chat_key].append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Even denken..."):
+                        summary = ai_insights._build_posts_summary(
+                            posts, platform, page, follower_count)
+                        answer = ai_insights.chat_with_data(
+                            summary, st.session_state[chat_key])
+                    st.markdown(answer)
+                st.session_state[chat_key].append(
+                    {"role": "assistant", "content": answer})
+
     st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
                 unsafe_allow_html=True)
     st.subheader("Posts")
     show_posts_table(platform, page)
+
+
+@st.cache_data(ttl=3600)
+def _ai_analyze_posts(_post_ids: tuple, platform: str, page: str,
+                      follower_count: int | None) -> str:
+    posts = get_posts(platform=platform, page=page)
+    return ai_insights.analyze_posts(posts, platform, page, follower_count)
+
+
+@st.cache_data(ttl=3600)
+def _ai_monthly_report(_post_ids: tuple, platform: str, page: str,
+                       month: str, follower_count: int | None) -> str:
+    posts = get_posts(platform=platform, page=page)
+    return ai_insights.generate_monthly_report(posts, platform, page, month, follower_count)
+
+
+@st.cache_data(ttl=3600)
+def _ai_suggest_content(_post_ids: tuple, platform: str, page: str,
+                        follower_count: int | None) -> str:
+    posts = get_posts(platform=platform, page=page)
+    return ai_insights.suggest_content(posts, platform, page, follower_count)
+
+
+def _gather_all_data() -> tuple[dict[str, list[dict]], dict[str, int | None]]:
+    """Verzamel alle post-data en volgers voor alle merken/platformen."""
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    channels = [
+        ("prins", "instagram"), ("prins", "facebook"), ("prins", "tiktok"),
+        ("edupet", "instagram"), ("edupet", "facebook"),
+    ]
+    all_posts = {}
+    follower_counts = {}
+    for page, platform in channels:
+        key = f"{page}_{platform}"
+        posts = get_posts(platform=platform, page=page)
+        if posts:
+            all_posts[key] = posts
+        follower_counts[key] = get_follower_count(DEFAULT_DB, platform, page, current_month)
+    return all_posts, follower_counts
+
+
+@st.cache_data(ttl=3600)
+def _ai_cross_analyze(_post_hash: str) -> str:
+    all_posts, follower_counts = _gather_all_data()
+    return ai_insights.analyze_cross_platform(all_posts, follower_counts)
+
+
+@st.cache_data(ttl=3600)
+def _ai_cross_report(_post_hash: str, month: str) -> str:
+    all_posts, follower_counts = _gather_all_data()
+    return ai_insights.generate_cross_platform_report(all_posts, follower_counts, month)
+
+
+@st.cache_data(ttl=3600)
+def _ai_cross_suggest(_post_hash: str) -> str:
+    all_posts, follower_counts = _gather_all_data()
+    return ai_insights.suggest_content_cross_platform(all_posts, follower_counts)
+
+
+def _show_ai_insights_top():
+    """Cross-platform AI Inzichten expander bovenaan de pagina."""
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    all_posts, follower_counts = _gather_all_data()
+    total_count = sum(len(p) for p in all_posts.values())
+    post_hash = f"{total_count}_{current_month}"
+
+    with st.expander("AI Inzichten — alle kanalen", expanded=False):
+        tab_chat, tab_rapport, tab_analyse, tab_suggesties = st.tabs(
+            ["Chat", "Maandrapport", "Analyse", "Content suggesties"]
+        )
+
+        with tab_chat:
+            chat_key = "ai_cross_chat"
+            if chat_key not in st.session_state:
+                st.session_state[chat_key] = []
+
+            for msg in st.session_state[chat_key]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            if prompt := st.chat_input("Stel een vraag over alle social media data...",
+                                       key="ai_cross_chat_input"):
+                st.session_state[chat_key].append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Even denken..."):
+                        summary = ai_insights.build_cross_platform_summary(
+                            all_posts, follower_counts)
+                        answer = ai_insights.chat_with_data(
+                            summary, st.session_state[chat_key])
+                    st.markdown(answer)
+                st.session_state[chat_key].append(
+                    {"role": "assistant", "content": answer})
+
+        with tab_rapport:
+            maand_opties = []
+            all_months = set()
+            for posts in all_posts.values():
+                for p in posts:
+                    m = (p.get("date") or "")[:7]
+                    if m:
+                        all_months.add(m)
+            for m in sorted(all_months, reverse=True)[:12]:
+                mm = m[5:7]
+                label = f"{MAAND_NL.get(int(mm), mm)} {m[:4]}"
+                maand_opties.append((label, m))
+
+            if maand_opties:
+                selected_label = st.selectbox(
+                    "Maand", [m[0] for m in maand_opties], key="ai_top_month")
+                selected_month = next(m[1] for m in maand_opties
+                                      if m[0] == selected_label)
+            else:
+                selected_month = current_month
+
+            if st.button("Genereer rapport", key="ai_top_rapport_btn"):
+                with st.spinner("AI schrijft rapport..."):
+                    result = _ai_cross_report(post_hash, selected_month)
+                    st.session_state["ai_top_rapport"] = result
+            if "ai_top_rapport" in st.session_state:
+                st.markdown(st.session_state["ai_top_rapport"])
+
+        with tab_analyse:
+            if st.button("Genereer analyse", key="ai_top_analyse_btn"):
+                with st.spinner("AI analyseert..."):
+                    result = _ai_cross_analyze(post_hash)
+                    st.session_state["ai_top_analyse"] = result
+            if "ai_top_analyse" in st.session_state:
+                st.markdown(st.session_state["ai_top_analyse"])
+
+        with tab_suggesties:
+            if st.button("Genereer suggesties", key="ai_top_suggesties_btn"):
+                with st.spinner("AI bedenkt content..."):
+                    result = _ai_cross_suggest(post_hash)
+                    st.session_state["ai_top_suggesties"] = result
+            if "ai_top_suggesties" in st.session_state:
+                st.markdown(st.session_state["ai_top_suggesties"])
 
 
 def main():
@@ -1312,8 +1529,6 @@ def main():
         _IG_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="{_PRINS_GREEN}" stroke="none"/></svg>'''
         _FB_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'''
         _TK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.47a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.53a8.35 8.35 0 0 0 4.76 1.48V6.56a4.84 4.84 0 0 1-1-.13z"/></svg>'''
-        _CSV_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>'''
-
         _active_nav = st.session_state.nav
 
         with st.expander("Prins", expanded=st.session_state.nav.startswith("prins")):
@@ -1355,16 +1570,6 @@ def main():
                           on_click=set_nav, args=("edupet_facebook",),
                           type="primary" if _active_nav == "edupet_facebook" else "secondary")
 
-        st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0;'>",
-                    unsafe_allow_html=True)
-
-        c1, c2 = st.columns([1, 6])
-        with c1:
-            st.markdown(_CSV_ICON, unsafe_allow_html=True)
-        with c2:
-            st.button("CSV Upload", key="btn_csv", use_container_width=True,
-                      on_click=set_nav, args=("csv_upload",))
-
         # ── Token status ──
         st.markdown("<hr style='border-color: #1a7a6a; margin: 1.5rem 0 0.5rem;'>",
                     unsafe_allow_html=True)
@@ -1404,6 +1609,9 @@ def main():
                 st.markdown(f"<a href='{auth_url}' target='_blank' style='font-size:0.75rem;'>TikTok verbinden →</a>",
                             unsafe_allow_html=True)
 
+    # ── AI Inzichten (cross-platform, bovenaan) ──
+    _show_ai_insights_top()
+
     # ── Content ──
     nav = st.session_state.nav
     if nav == "prins_instagram":
@@ -1416,8 +1624,6 @@ def main():
         show_single_channel("instagram", "edupet")
     elif nav == "edupet_facebook":
         show_single_channel("facebook", "edupet")
-    elif nav == "csv_upload":
-        show_upload_tab()
 
 
 def show_terms_of_service():
