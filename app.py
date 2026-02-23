@@ -1322,8 +1322,9 @@ def _ai_suggest_content(_post_ids: tuple, platform: str, page: str,
     return ai_insights.suggest_content(posts, platform, page, follower_count)
 
 
+@st.cache_data(ttl=300)
 def _gather_all_data() -> tuple[dict[str, list[dict]], dict[str, int | None]]:
-    """Verzamel alle post-data en volgers voor alle merken/platformen."""
+    """Verzamel alle post-data en volgers voor alle merken/platformen (cached 5 min)."""
     now = datetime.now(timezone.utc)
     current_month = now.strftime("%Y-%m")
     channels = [
@@ -1385,8 +1386,14 @@ def _show_ai_page():
 
     with tab_chat:
         chat_key = "ai_cross_chat"
+        summary_key = "ai_cross_summary"
         if chat_key not in st.session_state:
             st.session_state[chat_key] = []
+
+        # Cache de data-samenvatting in session_state (bouw 1x, hergebruik)
+        if summary_key not in st.session_state or not st.session_state[summary_key]:
+            st.session_state[summary_key] = ai_insights.build_cross_platform_summary(
+                all_posts, follower_counts)
 
         for msg in st.session_state[chat_key]:
             with st.chat_message(msg["role"]):
@@ -1399,12 +1406,10 @@ def _show_ai_page():
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Even denken..."):
-                    summary = ai_insights.build_cross_platform_summary(
-                        all_posts, follower_counts)
-                    answer = ai_insights.chat_with_data(
-                        summary, st.session_state[chat_key])
-                st.markdown(answer)
+                answer = st.write_stream(
+                    ai_insights.chat_with_data_stream(
+                        st.session_state[summary_key],
+                        st.session_state[chat_key]))
             st.session_state[chat_key].append(
                 {"role": "assistant", "content": answer})
 

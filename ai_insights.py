@@ -95,12 +95,13 @@ def _build_posts_summary(posts: list[dict], platform: str, page: str,
             lines.append(f"{label} | {len(mp)} | {m_likes} | {m_comments} | "
                          f"{m_shares} | {m_reach:,} | {m_views:,} | {m_er:.2f}%")
 
-    # ── Alle posts (compact) ──
-    lines.append("\n## Alle posts (gesorteerd op datum, nieuwste eerst)")
+    # ── Recente posts (compact, max 50) ──
+    sorted_by_date = sorted(posts, key=lambda p: p.get("date", ""), reverse=True)
+    recent_posts = sorted_by_date[:50]
+    lines.append(f"\n## Recente posts (nieuwste {len(recent_posts)} van {len(posts)})")
     lines.append("Datum | Type | Likes | Reacties | Shares | Bereik | Weergaven | Tekst")
     lines.append("--- | --- | --- | --- | --- | --- | --- | ---")
-    sorted_by_date = sorted(posts, key=lambda p: p.get("date", ""), reverse=True)
-    for p in sorted_by_date:
+    for p in recent_posts:
         date = (p.get("date") or "")[:10]
         ptype = p.get("type", "Post")
         likes = p.get("likes", 0) or 0
@@ -327,11 +328,12 @@ def suggest_content_cross_platform(all_posts: dict[str, list[dict]],
                         f"Geef content-suggesties op basis van alle data:\n\n{summary}")
 
 
-def chat_with_data(data_summary: str, messages: list[dict]) -> str:
-    """Vrije chat over de social media data. Houdt conversatiegeschiedenis bij."""
+def chat_with_data_stream(data_summary: str, messages: list[dict]):
+    """Streaming chat over de social media data. Yields tekst chunks."""
     api_key = _get_secret("OPENAI_API_KEY")
     if not api_key:
-        return "Geen OPENAI_API_KEY gevonden — chat niet beschikbaar."
+        yield "Geen OPENAI_API_KEY gevonden — chat niet beschikbaar."
+        return
 
     system_prompt = (
         "Je bent een behulpzame social media analist bij Prins Petfoods, een Nederlands "
@@ -347,11 +349,18 @@ def chat_with_data(data_summary: str, messages: list[dict]) -> str:
     for msg in messages:
         api_messages.append({"role": msg["role"], "content": msg["content"]})
 
-    client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=api_messages,
-        temperature=0.7,
-        max_tokens=1500,
-    )
-    return response.choices[0].message.content
+    try:
+        client = OpenAI(api_key=api_key)
+        stream = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=api_messages,
+            temperature=0.7,
+            max_tokens=1500,
+            stream=True,
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        yield f"\n\n⚠️ OpenAI fout: {e}"
