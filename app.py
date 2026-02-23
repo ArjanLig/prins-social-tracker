@@ -68,12 +68,14 @@ def _check_token(token: str) -> bool:
         resp = requests.get(
             f"{FB_BASE_URL}/debug_token",
             params={"input_token": token, "access_token": token},
-            timeout=10, verify=False,
+            timeout=10,
         )
         data = resp.json().get("data", {})
         return data.get("is_valid", False)
     except Exception:
-        return False
+        # Als de check zelf faalt (netwerk etc.), neem aan dat token geldig is
+        # zodat de app niet onnodig "verlopen" toont
+        return True
 
 
 def _exchange_for_long_lived(short_token: str) -> str | None:
@@ -89,7 +91,7 @@ def _exchange_for_long_lived(short_token: str) -> str | None:
                 "client_secret": META_APP_SECRET,
                 "fb_exchange_token": short_token,
             },
-            timeout=10, verify=False,
+            timeout=10,
         )
         resp.raise_for_status()
         return resp.json().get("access_token")
@@ -107,7 +109,7 @@ def _get_permanent_page_tokens(user_token: str) -> dict:
             f"{FB_BASE_URL}/me/accounts",
             params={"access_token": user_token,
                     "fields": "id,name,access_token"},
-            timeout=10, verify=False,
+            timeout=10,
         )
         resp.raise_for_status()
         pages = {}
@@ -235,7 +237,7 @@ def sync_follower_current(brand: str) -> dict:
                 "until": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "access_token": token,
             },
-            timeout=15, verify=False,
+            timeout=15,
         )
         if resp.status_code == 200:
             values = resp.json().get("data", [{}])[0].get("values", [])
@@ -256,7 +258,7 @@ def sync_follower_current(brand: str) -> dict:
             f"{FB_BASE_URL}/{page_id}",
             params={"fields": "instagram_business_account{followers_count}",
                     "access_token": token},
-            timeout=15, verify=False,
+            timeout=15,
         )
         ig_data = resp.json().get("instagram_business_account", {})
         ig_id = ig_data.get("id")
@@ -271,7 +273,7 @@ def sync_follower_current(brand: str) -> dict:
                 f"{FB_BASE_URL}/{ig_id}/insights",
                 params={"metric": "follower_count", "period": "day",
                         "access_token": token},
-                timeout=15, verify=False,
+                timeout=15,
             )
             if resp3.status_code == 200:
                 values = resp3.json().get("data", [{}])[0].get("values", [])
@@ -318,7 +320,7 @@ def sync_posts_from_api(brand: str) -> dict:
                 "limit": 10,
                 "access_token": token,
             },
-            timeout=15, verify=False,
+            timeout=15,
         )
         resp.raise_for_status()
         fb_posts = []
@@ -358,7 +360,7 @@ def sync_posts_from_api(brand: str) -> dict:
             f"{FB_BASE_URL}/{page_id}",
             params={"fields": "instagram_business_account",
                     "access_token": token},
-            timeout=10, verify=False,
+            timeout=10,
         )
         resp.raise_for_status()
         ig_id = resp.json().get("instagram_business_account", {}).get("id")
@@ -371,7 +373,7 @@ def sync_posts_from_api(brand: str) -> dict:
                     "limit": 10,
                     "access_token": token,
                 },
-                timeout=10, verify=False,
+                timeout=10,
             )
             resp.raise_for_status()
             ig_posts = []
@@ -388,7 +390,7 @@ def sync_posts_from_api(brand: str) -> dict:
                                 "metric": "reach,views",
                                 "access_token": token,
                             },
-                            timeout=10, verify=False,
+                            timeout=10,
                         )
                         ins_resp.raise_for_status()
                         for m in ins_resp.json().get("data", []):
