@@ -43,7 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Meta Graph API ──
-FB_API_VERSION = "v21.0"
+FB_API_VERSION = "v22.0"
 FB_BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
 META_APP_ID = os.getenv("META_APP_ID", "")
 META_APP_SECRET = os.getenv("META_APP_SECRET", "")
@@ -141,11 +141,13 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
     # Stap 1: long-lived token
     long_lived = _exchange_for_long_lived(user_token)
     if not long_lived:
-        # Probeer direct als het al long-lived is
         long_lived = user_token
 
-    # Stap 2: page tokens ophalen
+    # Stap 2: page tokens ophalen (met long-lived voor permanente tokens)
     pages = _get_permanent_page_tokens(long_lived)
+    if not pages:
+        # Fallback: probeer met originele token
+        pages = _get_permanent_page_tokens(user_token)
     if not pages:
         return False, "Kon geen page tokens ophalen. Controleer of het token de juiste permissies heeft."
 
@@ -296,13 +298,14 @@ def sync_posts_from_api(brand: str) -> dict:
     result = {"facebook": 0, "instagram": 0}
 
     # Facebook posts (laatste 10 — historische data zit al in DB)
+    # post_media_view vervangt post_impressions sinds v22.0
     try:
         resp = requests.get(
             f"{FB_BASE_URL}/{page_id}/published_posts",
             params={
                 "fields": "message,created_time,shares,"
                           "likes.summary(true),comments.summary(true),"
-                          "insights.metric(post_impressions,post_impressions_unique)",
+                          "insights.metric(post_media_view,post_clicks)",
                 "limit": 10,
                 "access_token": token,
             },
@@ -314,25 +317,24 @@ def sync_posts_from_api(brand: str) -> dict:
             likes = post.get("likes", {}).get("summary", {}).get("total_count", 0)
             comments = post.get("comments", {}).get("summary", {}).get("total_count", 0)
             shares = post.get("shares", {}).get("count", 0)
-            # Extract reach & impressions from insights
-            reach = 0
-            impressions = 0
+            clicks = 0
+            views = 0
             for insight in post.get("insights", {}).get("data", []):
                 val = insight.get("values", [{}])[0].get("value", 0)
-                if insight.get("name") == "post_impressions_unique":
-                    reach = val
-                elif insight.get("name") == "post_impressions":
-                    impressions = val
+                if insight.get("name") == "post_clicks":
+                    clicks = val
+                elif insight.get("name") == "post_media_view":
+                    views = val
             fb_posts.append({
                 "date": post.get("created_time", "").replace("+0000", ""),
                 "type": "Post",
                 "text": (post.get("message") or "")[:200],
-                "reach": reach,
-                "views": impressions,
+                "reach": 0,
+                "views": views,
                 "likes": likes,
                 "comments": comments,
                 "shares": shares,
-                "clicks": 0,
+                "clicks": clicks,
                 "page": brand,
                 "source": "api",
             })
@@ -374,7 +376,7 @@ def sync_posts_from_api(brand: str) -> dict:
                         ins_resp = requests.get(
                             f"{FB_BASE_URL}/{post_id}/insights",
                             params={
-                                "metric": "impressions,reach",
+                                "metric": "reach,views",
                                 "access_token": token,
                             },
                             timeout=10, verify=False,
@@ -384,7 +386,7 @@ def sync_posts_from_api(brand: str) -> dict:
                             val = m.get("values", [{}])[0].get("value", 0)
                             if m.get("name") == "reach":
                                 post_reach = val
-                            elif m.get("name") == "impressions":
+                            elif m.get("name") == "views":
                                 post_impressions = val
                     except Exception:
                         pass
@@ -470,8 +472,8 @@ st.markdown("""
         display: none !important;
     }
 
-    /* ── Buttons ── */
-    .stButton > button {
+    /* ── Buttons (main content) ── */
+    .main .stButton > button {
         background-color: #0d5a4d !important;
         color: white !important;
         border: none !important;
@@ -481,9 +483,30 @@ st.markdown("""
         font-weight: 500 !important;
         transition: background-color 0.2s ease !important;
     }
-    .stButton > button:hover {
+    .main .stButton > button:hover {
         background-color: #0a4a3f !important;
         color: white !important;
+    }
+
+    /* ── Sidebar nav buttons ── */
+    section[data-testid="stSidebar"] .stButton > button {
+        background: transparent !important;
+        color: #1d1d1f !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 6px 12px !important;
+        font-size: 0.85rem !important;
+        font-weight: 500 !important;
+        text-align: left !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        background: rgba(162, 196, 186, 0.2) !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+        background: rgba(162, 196, 186, 0.3) !important;
+        border-left: 3px solid #0d5a4d !important;
+        border-radius: 0 8px 8px 0 !important;
+        font-weight: 600 !important;
     }
 
     /* ── Inputs & selects ── */
@@ -1147,10 +1170,20 @@ def show_single_channel(platform: str, page: str):
 
     label = page.capitalize()
     plat_label = platform.capitalize()
+
+    if platform == "facebook":
+        _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#0d5a4d" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'
+    else:
+        _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0d5a4d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="#0d5a4d" stroke="none"/></svg>'
+
     st.markdown(f"""
-    <div style="padding: 0.5rem 0 1rem;">
-        <h2 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">{label} — {plat_label}</h2>
-        <p style="color: #86868b;">{plat_label} overzicht</p>
+    <div style="padding: 0.5rem 0 0.75rem;">
+        <h2 style="color: #1d1d1f; margin: 0; letter-spacing: -0.02em; font-size: 1.6rem;
+                   display: flex; align-items: center; gap: 0.5rem;">
+            {plat_label} <span style="display: inline-flex;">{_plat_icon}</span>
+        </h2>
+        <p style="color: #86868b; margin: 0.2rem 0 0; font-size: 1.05rem;">{label} overzicht</p>
+        <div style="width: 40px; height: 3px; background: #0d5a4d; border-radius: 2px; margin-top: 0.6rem;"></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1190,19 +1223,23 @@ def main():
         _FB_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'''
         _CSV_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>'''
 
+        _active_nav = st.session_state.nav
+
         with st.expander("Prins", expanded=st.session_state.nav.startswith("prins")):
             c1, c2 = st.columns([1, 6])
             with c1:
                 st.markdown(_IG_ICON, unsafe_allow_html=True)
             with c2:
                 st.button("Instagram", key="btn_prins_ig", use_container_width=True,
-                          on_click=set_nav, args=("prins_instagram",))
+                          on_click=set_nav, args=("prins_instagram",),
+                          type="primary" if _active_nav == "prins_instagram" else "secondary")
             c1, c2 = st.columns([1, 6])
             with c1:
                 st.markdown(_FB_ICON, unsafe_allow_html=True)
             with c2:
                 st.button("Facebook", key="btn_prins_fb", use_container_width=True,
-                          on_click=set_nav, args=("prins_facebook",))
+                          on_click=set_nav, args=("prins_facebook",),
+                          type="primary" if _active_nav == "prins_facebook" else "secondary")
 
         with st.expander("Edupet", expanded=st.session_state.nav.startswith("edupet")):
             c1, c2 = st.columns([1, 6])
@@ -1210,13 +1247,15 @@ def main():
                 st.markdown(_IG_ICON, unsafe_allow_html=True)
             with c2:
                 st.button("Instagram", key="btn_edupet_ig", use_container_width=True,
-                          on_click=set_nav, args=("edupet_instagram",))
+                          on_click=set_nav, args=("edupet_instagram",),
+                          type="primary" if _active_nav == "edupet_instagram" else "secondary")
             c1, c2 = st.columns([1, 6])
             with c1:
                 st.markdown(_FB_ICON, unsafe_allow_html=True)
             with c2:
                 st.button("Facebook", key="btn_edupet_fb", use_container_width=True,
-                          on_click=set_nav, args=("edupet_facebook",))
+                          on_click=set_nav, args=("edupet_facebook",),
+                          type="primary" if _active_nav == "edupet_facebook" else "secondary")
 
         st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0;'>",
                     unsafe_allow_html=True)
