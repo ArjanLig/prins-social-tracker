@@ -118,6 +118,13 @@ _SCHEMA = [
         recorded_at TEXT NOT NULL,
         UNIQUE(platform, page, month)
     )""",
+    """CREATE TABLE IF NOT EXISTS remarks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author TEXT NOT NULL,
+        message TEXT NOT NULL,
+        status TEXT DEFAULT 'open',
+        created_at TEXT NOT NULL
+    )""",
 ]
 
 
@@ -398,3 +405,43 @@ def get_monthly_stats(db_path: str = DEFAULT_DB, platform: str | None = None) ->
         rows = conn.execute(sql, params).fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+
+def add_remark(db_path: str, author: str, message: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    sql = "INSERT INTO remarks (author, message, created_at) VALUES (?, ?, ?)"
+    params = [author, message, now]
+    if _USE_TURSO:
+        _turso_execute(sql, params)
+    else:
+        conn = _connect(db_path)
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()
+
+
+def get_remarks(db_path: str = DEFAULT_DB) -> list[dict]:
+    sql = "SELECT * FROM remarks ORDER BY created_at DESC"
+    if _USE_TURSO:
+        rows = _turso_execute(sql)
+        for row in rows:
+            if "id" in row and row["id"] is not None:
+                row["id"] = int(row["id"])
+        return rows
+    else:
+        conn = _connect(db_path)
+        rows = conn.execute(sql).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+
+def update_remark_status(db_path: str, remark_id: int, status: str) -> None:
+    sql = "UPDATE remarks SET status = ? WHERE id = ?"
+    params = [status, remark_id]
+    if _USE_TURSO:
+        _turso_execute(sql, params)
+    else:
+        conn = _connect(db_path)
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()

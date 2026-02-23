@@ -22,16 +22,19 @@ from tiktok_api import (
 )
 from database import (
     DEFAULT_DB,
+    add_remark,
     get_follower_count,
     get_follower_previous_month,
     get_monthly_stats,
     get_posts,
+    get_remarks,
     get_uploads,
     init_db,
     insert_posts,
     log_upload,
     save_follower_snapshot,
     update_post_labels,
+    update_remark_status,
 )
 import ai_insights
 
@@ -1614,6 +1617,44 @@ def main():
                 auth_url = tiktok_get_auth_url(TIKTOK_CLIENT_KEY, "https://localhost/callback")
                 st.markdown(f"<a href='{auth_url}' target='_blank' style='font-size:0.75rem;'>TikTok verbinden →</a>",
                             unsafe_allow_html=True)
+
+        # ── Opmerkingenbord ──
+        st.markdown("<hr style='border-color: #1a7a6a; margin: 1.5rem 0 0.5rem;'>",
+                    unsafe_allow_html=True)
+        with st.expander("Opmerkingen", expanded=False):
+            # Nieuwe opmerking toevoegen
+            with st.form("remark_form", clear_on_submit=True):
+                remark_author = st.text_input("Naam", placeholder="Jouw naam")
+                remark_msg = st.text_area("Opmerking", placeholder="Wat moet er veranderd worden?",
+                                          height=80)
+                remark_submit = st.form_submit_button("Plaatsen")
+            if remark_submit and remark_author and remark_msg:
+                add_remark(DEFAULT_DB, remark_author, remark_msg)
+                st.success("Opmerking geplaatst!")
+                st.rerun()
+
+            # Bestaande opmerkingen tonen
+            remarks = get_remarks()
+            if remarks:
+                for r in remarks:
+                    is_done = r.get("status") == "afgehandeld"
+                    ts = (r.get("created_at") or "")[:16].replace("T", " ")
+                    icon = "~~" if is_done else ""
+                    st.markdown(
+                        f"**{r.get('author', '')}** "
+                        f"<span style='color:#86868b; font-size:0.75rem;'>{ts}</span>\n\n"
+                        f"{icon}{r.get('message', '')}{icon}",
+                        unsafe_allow_html=True)
+                    if not is_done:
+                        if st.button("Afhandelen", key=f"remark_done_{r['id']}"):
+                            update_remark_status(DEFAULT_DB, r["id"], "afgehandeld")
+                            st.rerun()
+                    else:
+                        st.caption("Afgehandeld")
+                    st.markdown("<hr style='margin:0.5rem 0; border-color:#e0ece9;'>",
+                                unsafe_allow_html=True)
+            else:
+                st.caption("Nog geen opmerkingen.")
 
     # ── AI Inzichten (cross-platform, bovenaan) ──
     _show_ai_insights_top()
