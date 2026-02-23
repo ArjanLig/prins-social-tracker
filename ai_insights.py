@@ -26,19 +26,22 @@ def _call_openai(system_prompt: str, user_prompt: str) -> str:
     """Stuur een prompt naar OpenAI GPT-4o-mini en return het antwoord."""
     api_key = _get_secret("OPENAI_API_KEY")
     if not api_key:
-        return "Geen OPENAI_API_KEY gevonden — AI-analyse niet beschikbaar."
+        return "⚠️ Geen OPENAI_API_KEY gevonden. Voeg deze toe in Streamlit Cloud → Settings → Secrets."
 
-    client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.7,
-        max_tokens=1500,
-    )
-    return response.choices[0].message.content
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7,
+            max_tokens=1500,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ OpenAI fout: {e}"
 
 
 MAAND_NL = {
