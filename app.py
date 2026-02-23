@@ -1537,26 +1537,6 @@ def main():
         _TK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.47a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.53a8.35 8.35 0 0 0 4.76 1.48V6.56a4.84 4.84 0 0 1-1-.13z"/></svg>'''
         _active_nav = st.session_state.nav
 
-        _AI_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'''
-        c1, c2 = st.columns([1, 6])
-        with c1:
-            st.markdown(_AI_ICON, unsafe_allow_html=True)
-        with c2:
-            st.button("AI Inzichten", key="btn_ai", use_container_width=True,
-                      on_click=set_nav, args=("ai_insights",),
-                      type="primary" if _active_nav == "ai_insights" else "secondary")
-
-        _REMARK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>'''
-        c1, c2 = st.columns([1, 6])
-        with c1:
-            st.markdown(_REMARK_ICON, unsafe_allow_html=True)
-        with c2:
-            st.button("Opmerkingen", key="btn_remarks", use_container_width=True,
-                      on_click=set_nav, args=("remarks",),
-                      type="primary" if _active_nav == "remarks" else "secondary")
-
-        st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
-
         with st.expander("Prins", expanded=st.session_state.nav.startswith("prins")):
             c1, c2 = st.columns([1, 6])
             with c1:
@@ -1595,6 +1575,26 @@ def main():
                 st.button("Facebook", key="btn_edupet_fb", use_container_width=True,
                           on_click=set_nav, args=("edupet_facebook",),
                           type="primary" if _active_nav == "edupet_facebook" else "secondary")
+
+        st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
+
+        _AI_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'''
+        c1, c2 = st.columns([1, 6])
+        with c1:
+            st.markdown(_AI_ICON, unsafe_allow_html=True)
+        with c2:
+            st.button("AI Inzichten", key="btn_ai", use_container_width=True,
+                      on_click=set_nav, args=("ai_insights",),
+                      type="primary" if _active_nav == "ai_insights" else "secondary")
+
+        _REMARK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>'''
+        c1, c2 = st.columns([1, 6])
+        with c1:
+            st.markdown(_REMARK_ICON, unsafe_allow_html=True)
+        with c2:
+            st.button("Opmerkingen", key="btn_remarks", use_container_width=True,
+                      on_click=set_nav, args=("remarks",),
+                      type="primary" if _active_nav == "remarks" else "secondary")
 
         # ── Token status ──
         st.markdown("<hr style='border-color: #1a7a6a; margin: 1.5rem 0 0.5rem;'>",
