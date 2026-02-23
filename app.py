@@ -11,9 +11,12 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from csv_import import detect_platform, parse_csv_file
 from database import (
     DEFAULT_DB,
+    get_follower_count,
     get_follower_previous_month,
     get_monthly_stats,
     get_posts,
@@ -24,8 +27,6 @@ from database import (
     save_follower_snapshot,
     update_post_labels,
 )
-
-load_dotenv()
 
 
 def _get_secret(key: str, default: str = "") -> str:
@@ -870,14 +871,7 @@ def show_channel_dashboard(platform: str, page: str):
 
     # KPI cards — volgers uit database (al gesynchroniseerd door sync_follower_current)
     current_month = now.strftime("%Y-%m")
-    from database import _connect
-    _conn = _connect(DEFAULT_DB)
-    _row = _conn.execute(
-        "SELECT followers FROM follower_snapshots WHERE platform = ? AND page = ? AND month = ?",
-        (platform, page, current_month),
-    ).fetchone()
-    _conn.close()
-    follower_count = _row["followers"] if _row else None
+    follower_count = get_follower_count(DEFAULT_DB, platform, page, current_month)
 
     follower_delta = None
     if follower_count is not None:
