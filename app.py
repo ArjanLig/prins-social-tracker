@@ -1332,18 +1332,20 @@ def show_single_channel(platform: str, page: str):
             if chat_key not in st.session_state:
                 st.session_state[chat_key] = []
 
-            # Chat history weergeven
             for msg in st.session_state[chat_key]:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            # Chat input
-            if prompt := st.chat_input("Stel een vraag over de data...",
-                                       key=f"{chat_key}_input"):
-                st.session_state[chat_key].append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+            with st.form(f"{chat_key}_form", clear_on_submit=True):
+                user_input = st.text_input(
+                    "Vraag", placeholder="Stel een vraag over de data...",
+                    label_visibility="collapsed")
+                submitted = st.form_submit_button("Verstuur")
 
+            if submitted and user_input:
+                st.session_state[chat_key].append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.markdown(user_input)
                 with st.chat_message("assistant"):
                     with st.spinner("Even denken..."):
                         summary = ai_insights._build_posts_summary(
@@ -1440,12 +1442,16 @@ def _show_ai_insights_top():
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            if prompt := st.chat_input("Stel een vraag over alle social media data...",
-                                       key="ai_cross_chat_input"):
-                st.session_state[chat_key].append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+            with st.form("ai_cross_chat_form", clear_on_submit=True):
+                user_input = st.text_input(
+                    "Vraag", placeholder="Stel een vraag over alle social media data...",
+                    label_visibility="collapsed")
+                submitted = st.form_submit_button("Verstuur")
 
+            if submitted and user_input:
+                st.session_state[chat_key].append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.markdown(user_input)
                 with st.chat_message("assistant"):
                     with st.spinner("Even denken..."):
                         summary = ai_insights.build_cross_platform_summary(
