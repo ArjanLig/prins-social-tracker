@@ -27,6 +27,15 @@ from database import (
 
 load_dotenv()
 
+
+def _get_secret(key: str, default: str = "") -> str:
+    """Haal waarde op uit st.secrets (Streamlit Cloud) of os.getenv (lokaal)."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.getenv(key, default)
+
+
 st.set_page_config(
     page_title="Prins Social Tracker",
     page_icon="📊",
@@ -45,8 +54,8 @@ st.markdown("""
 # ── Meta Graph API ──
 FB_API_VERSION = "v22.0"
 FB_BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
-META_APP_ID = os.getenv("META_APP_ID", "")
-META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+META_APP_ID = _get_secret("META_APP_ID")
+META_APP_SECRET = _get_secret("META_APP_SECRET")
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 
@@ -154,8 +163,8 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
     # Stap 3: opslaan in .env
     _update_env("USER_TOKEN", long_lived)
 
-    prins_page_id = os.getenv("PRINS_PAGE_ID", "")
-    edupet_page_id = os.getenv("EDUPET_PAGE_ID", "")
+    prins_page_id = _get_secret("PRINS_PAGE_ID")
+    edupet_page_id = _get_secret("EDUPET_PAGE_ID")
     updated = []
 
     if prins_page_id in pages:
@@ -172,28 +181,28 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
 
 
 # ── Auto token refresh bij opstarten ──
-_prins_token = os.getenv("PRINS_TOKEN", "")
+_prins_token = _get_secret("PRINS_TOKEN")
 _tokens_valid = _check_token(_prins_token) if _prins_token else False
 
 if not _tokens_valid:
     # Probeer automatisch te vernieuwen via user token
-    _user_token = os.getenv("USER_TOKEN", "")
+    _user_token = _get_secret("USER_TOKEN")
     if _user_token and META_APP_ID and META_APP_SECRET:
         _success, _msg = refresh_all_tokens(_user_token)
         if _success:
             # Herlaad de vernieuwde tokens uit .env
             load_dotenv(override=True)
-            _prins_token = os.getenv("PRINS_TOKEN", "")
+            _prins_token = _get_secret("PRINS_TOKEN")
             _tokens_valid = _check_token(_prins_token) if _prins_token else False
 
 BRAND_CONFIG = {
     "prins": {
-        "token": os.getenv("PRINS_TOKEN"),
-        "page_id": os.getenv("PRINS_PAGE_ID"),
+        "token": _get_secret("PRINS_TOKEN"),
+        "page_id": _get_secret("PRINS_PAGE_ID"),
     },
     "edupet": {
-        "token": os.getenv("EDUPET_TOKEN"),
-        "page_id": os.getenv("EDUPET_PAGE_ID"),
+        "token": _get_secret("EDUPET_TOKEN"),
+        "page_id": _get_secret("EDUPET_PAGE_ID"),
     },
 }
 
