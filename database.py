@@ -160,8 +160,11 @@ def save_follower_snapshot(db_path: str, platform: str, page: str,
         conn.execute(sql, params)
         conn.commit()
         conn.close()
+    get_follower_count.clear()
+    get_follower_previous_month.clear()
 
 
+@st.cache_data(ttl=300)
 def get_follower_count(db_path: str, platform: str, page: str, month: str) -> int | None:
     sql = "SELECT followers FROM follower_snapshots WHERE platform = ? AND page = ? AND month = ?"
     params = [platform, page, month]
@@ -175,6 +178,7 @@ def get_follower_count(db_path: str, platform: str, page: str, month: str) -> in
         return row["followers"] if row else None
 
 
+@st.cache_data(ttl=300)
 def get_follower_previous_month(db_path: str, platform: str, page: str) -> int | None:
     now = datetime.now(timezone.utc)
     if now.month == 1:
@@ -300,9 +304,12 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                         params)
         conn.commit()
         conn.close()
+    get_posts.clear()
+    get_monthly_stats.clear()
     return inserted
 
 
+@st.cache_data(ttl=300)
 def get_posts(db_path: str = DEFAULT_DB, platform: str | None = None,
               page: str | None = None) -> list[dict]:
     sql = "SELECT * FROM posts WHERE 1=1"
@@ -373,6 +380,7 @@ def get_uploads(db_path: str = DEFAULT_DB) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+@st.cache_data(ttl=300)
 def get_monthly_stats(db_path: str = DEFAULT_DB, platform: str | None = None) -> list[dict]:
     sql = """SELECT platform, page,
                 strftime('%Y-%m', date) as month,

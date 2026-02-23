@@ -60,8 +60,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Init database on startup
-init_db()
+# Init database on startup (only once per app deployment)
+@st.cache_resource
+def _init_db_once():
+    init_db()
+    return True
+
+_init_db_once()
 
 # ── Custom styling ──
 st.markdown("""
@@ -84,8 +89,9 @@ TIKTOK_ACCESS_TOKEN = _get_secret("TIKTOK_ACCESS_TOKEN")
 TIKTOK_REFRESH_TOKEN = _get_secret("TIKTOK_REFRESH_TOKEN")
 
 
+@st.cache_data(ttl=900)
 def _check_token(token: str) -> bool:
-    """Check of een token nog geldig is."""
+    """Check of een token nog geldig is (cached 15 min)."""
     if not token:
         return False
     try:
@@ -206,6 +212,12 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
     return True, f"Tokens vernieuwd voor: {', '.join(updated)}"
 
 
+@st.cache_data(ttl=900)
+def _tiktok_check_cached(token: str) -> bool:
+    """Check TikTok token geldigheid (cached 15 min)."""
+    return tiktok_check_token(token)
+
+
 # ── Auto token refresh bij opstarten ──
 _prins_token = _get_secret("PRINS_TOKEN")
 _tokens_valid = _check_token(_prins_token) if _prins_token else False
@@ -223,7 +235,7 @@ if not _tokens_valid:
 
 # ── Auto TikTok token refresh bij opstarten ──
 _tiktok_token = TIKTOK_ACCESS_TOKEN
-_tiktok_valid = tiktok_check_token(_tiktok_token) if _tiktok_token else False
+_tiktok_valid = _tiktok_check_cached(_tiktok_token) if _tiktok_token else False
 
 if not _tiktok_valid and TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET and TIKTOK_REFRESH_TOKEN:
     _tt_result = tiktok_refresh_access_token(TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, TIKTOK_REFRESH_TOKEN)
