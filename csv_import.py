@@ -6,11 +6,14 @@ from pathlib import Path
 
 # Flexibele kolommapping: intern veld -> mogelijke CSV-kolomnamen
 COLUMN_MAP = {
-    "datum": ["Publicatietijdstip", "Datum", "Date", "Created", "Aangemaakt"],
+    "datum": ["Publicatietijdstip", "Datum", "Date", "Created", "Aangemaakt",
+              "Creation date"],
     "type": ["Berichttype", "Type", "Media type", "Post Type", "Content type"],
-    "tekst": ["Titel", "Bericht", "Caption", "Message", "Beschrijving", "Omschrijving", "Post Message"],
+    "tekst": ["Titel", "Bericht", "Caption", "Message", "Beschrijving",
+              "Omschrijving", "Post Message", "Video description"],
     "bereik": ["Bereik", "Reach", "Lifetime Post Total Reach"],
-    "weergaven": ["Weergaven", "Impressions", "Views", "Lifetime Post Total Impressions"],
+    "weergaven": ["Weergaven", "Impressions", "Views", "Lifetime Post Total Impressions",
+                  "Video views", "Total views", "Total play time"],
     "likes": ["Reacties", "Likes", "Vind-ik-leuks", "Lifetime Post Like Reactions"],
     "reacties": ["Opmerkingen", "Comments", "Lifetime Post Comments"],
     "shares": ["Deelacties", "Shares", "Lifetime Post Shares"],
@@ -22,6 +25,9 @@ COLUMN_MAP = {
 IG_ONLY_COLUMNS = {"Vind-ik-leuks", "Media type"}
 # Kolommen die alleen in Facebook voorkomen
 FB_ONLY_COLUMNS = {"Deelacties", "Berichttype", "Totaal aantal klikken"}
+# Kolommen die alleen in TikTok voorkomen
+TK_ONLY_COLUMNS = {"Video views", "Total play time", "Video description",
+                    "Total views"}
 
 
 def _resolve_columns(header: list[str]) -> dict[str, str | None]:
@@ -61,17 +67,21 @@ def _safe_int(value) -> int:
 
 
 def detect_platform(csv_path: str | Path) -> str:
-    """Detecteer of een CSV Facebook of Instagram data bevat."""
+    """Detecteer of een CSV Facebook, Instagram of TikTok data bevat."""
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
         header = next(reader, [])
     header_set = {h.strip() for h in header}
+    if header_set & TK_ONLY_COLUMNS:
+        return "tiktok"
     if header_set & IG_ONLY_COLUMNS:
         return "instagram"
     if header_set & FB_ONLY_COLUMNS:
         return "facebook"
     # Fallback: check bestandsnaam
     name = Path(csv_path).stem.lower()
+    if "tiktok" in name or "tik_tok" in name:
+        return "tiktok"
     if "ig" in name or "instagram" in name or "insta" in name:
         return "instagram"
     return "facebook"
@@ -81,6 +91,8 @@ def detect_platform(csv_path: str | Path) -> str:
 PAGE_NAME_MAP = {
     "prins": "prins",
     "prins petfoods": "prins",
+    "prinspetfoods": "prins",
+    "@prinspetfoods": "prins",
     "edupet": "edupet",
 }
 
@@ -152,7 +164,7 @@ def parse_csv_folder(folder_path: str) -> dict[str, list[dict]]:
          "instagram": [{"file": "naam.csv", "posts": [...]}, ...]}
     """
     folder = Path(folder_path)
-    result: dict[str, list[dict]] = {"facebook": [], "instagram": []}
+    result: dict[str, list[dict]] = {"facebook": [], "instagram": [], "tiktok": []}
     for csv_file in sorted(folder.glob("*.csv")):
         platform = detect_platform(csv_file)
         posts = parse_csv_file(csv_file)

@@ -14,6 +14,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from csv_import import detect_platform, parse_csv_file
+from tiktok_api import (
+    tiktok_check_token,
+    tiktok_get_user_info,
+    tiktok_get_videos,
+    tiktok_refresh_access_token,
+)
 from database import (
     DEFAULT_DB,
     get_follower_count,
@@ -43,6 +49,13 @@ st.set_page_config(
     layout="wide",
 )
 
+# TikTok domeinverificatie
+st.markdown(
+    '<meta name="tiktok-developers-site-verification" '
+    'content="WbgkY4xGEMTNCKBU8LDKzamfs1G0uRxb" />',
+    unsafe_allow_html=True,
+)
+
 # Init database on startup
 init_db()
 
@@ -59,6 +72,12 @@ META_APP_ID = _get_secret("META_APP_ID")
 META_APP_SECRET = _get_secret("META_APP_SECRET")
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+
+# ── TikTok API ──
+TIKTOK_CLIENT_KEY = _get_secret("TIKTOK_CLIENT_KEY")
+TIKTOK_CLIENT_SECRET = _get_secret("TIKTOK_CLIENT_SECRET")
+TIKTOK_ACCESS_TOKEN = _get_secret("TIKTOK_ACCESS_TOKEN")
+TIKTOK_REFRESH_TOKEN = _get_secret("TIKTOK_REFRESH_TOKEN")
 
 
 def _check_token(token: str) -> bool:
@@ -197,6 +216,19 @@ if not _tokens_valid:
             load_dotenv(override=True)
             _prins_token = _get_secret("PRINS_TOKEN")
             _tokens_valid = _check_token(_prins_token) if _prins_token else False
+
+# ── Auto TikTok token refresh bij opstarten ──
+_tiktok_token = TIKTOK_ACCESS_TOKEN
+_tiktok_valid = tiktok_check_token(_tiktok_token) if _tiktok_token else False
+
+if not _tiktok_valid and TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET and TIKTOK_REFRESH_TOKEN:
+    _tt_result = tiktok_refresh_access_token(TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, TIKTOK_REFRESH_TOKEN)
+    if _tt_result:
+        _update_env("TIKTOK_ACCESS_TOKEN", _tt_result["access_token"])
+        _update_env("TIKTOK_REFRESH_TOKEN", _tt_result["refresh_token"])
+        load_dotenv(override=True)
+        _tiktok_token = _tt_result["access_token"]
+        _tiktok_valid = True
 
 BRAND_CONFIG = {
     "prins": {
@@ -421,6 +453,31 @@ def sync_posts_from_api(brand: str) -> dict:
         pass
 
     return result
+
+
+@st.cache_data(ttl=900)
+def sync_tiktok_followers(brand: str) -> int | None:
+    """Sync TikTok volgers voor een merk (gecached 15 min)."""
+    if not _tiktok_valid or not _tiktok_token:
+        return None
+    user_info = tiktok_get_user_info(_tiktok_token)
+    if user_info and "follower_count" in user_info:
+        count = user_info["follower_count"]
+        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        save_follower_snapshot(DEFAULT_DB, "tiktok", brand, count, month=current_month)
+        return count
+    return None
+
+
+@st.cache_data(ttl=900)
+def sync_tiktok_videos(brand: str) -> int:
+    """Sync recente TikTok video's voor een merk (gecached 15 min)."""
+    if not _tiktok_valid or not _tiktok_token:
+        return 0
+    videos = tiktok_get_videos(_tiktok_token)
+    if videos:
+        return insert_posts(DEFAULT_DB, videos, "tiktok")
+    return 0
 
 
 # ── Prins Petfoods design system (Apple-inspired) ──
@@ -913,20 +970,37 @@ def show_channel_dashboard(platform: str, page: str):
     col3.metric("Gem. weergaven/post (deze maand)",
                 f"{impressions_per_post:,.0f}" if pd.notna(impressions_per_post) else "0",
                 delta=impressions_delta_str)
-    reach_per_post = df_month['reach'].mean() if len(df_month) > 0 else 0
-    reach_delta_str = None
-    if len(df_prev_months) > 0:
-        prev_reach_per_post = df_prev_months.groupby(
-            df_prev_months["date_parsed"].dt.strftime("%Y-%m")
-        )['reach'].mean()
-        if len(prev_reach_per_post) > 0:
-            avg_reach = prev_reach_per_post.mean()
-            diff = reach_per_post - avg_reach
-            arrow = "↑" if diff >= 0 else "↓"
-            reach_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
-    col4.metric("Gem. bereik/post (deze maand)",
-                f"{reach_per_post:,.0f}" if pd.notna(reach_per_post) else "0",
-                delta=reach_delta_str)
+    if platform == "tiktok":
+        # TikTok: gebruik views/video i.p.v. bereik (TikTok biedt geen bereik)
+        views_per_post = df_month['impressions'].mean() if len(df_month) > 0 else 0
+        views_delta_str = None
+        if len(df_prev_months) > 0:
+            prev_views_per_post = df_prev_months.groupby(
+                df_prev_months["date_parsed"].dt.strftime("%Y-%m")
+            )['impressions'].mean()
+            if len(prev_views_per_post) > 0:
+                avg_views = prev_views_per_post.mean()
+                diff = views_per_post - avg_views
+                arrow = "↑" if diff >= 0 else "↓"
+                views_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
+        col4.metric("Views/video (deze maand)",
+                    f"{views_per_post:,.0f}" if pd.notna(views_per_post) else "0",
+                    delta=views_delta_str)
+    else:
+        reach_per_post = df_month['reach'].mean() if len(df_month) > 0 else 0
+        reach_delta_str = None
+        if len(df_prev_months) > 0:
+            prev_reach_per_post = df_prev_months.groupby(
+                df_prev_months["date_parsed"].dt.strftime("%Y-%m")
+            )['reach'].mean()
+            if len(prev_reach_per_post) > 0:
+                avg_reach = prev_reach_per_post.mean()
+                diff = reach_per_post - avg_reach
+                arrow = "↑" if diff >= 0 else "↓"
+                reach_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
+        col4.metric("Gem. bereik/post (deze maand)",
+                    f"{reach_per_post:,.0f}" if pd.notna(reach_per_post) else "0",
+                    delta=reach_delta_str)
 
     # Engagement Rate deze maand vs. langlopend gemiddelde
     er_current = None
@@ -984,6 +1058,7 @@ def show_channel_dashboard(platform: str, page: str):
             posts=("id", "count"),
             engagement=("engagement", "sum"),
             bereik=("reach", "sum"),
+            weergaven=("impressions", "sum"),
             likes=("likes", "sum"),
             reacties=("comments", "sum"),
             er=("engagement_rate", "mean"),
@@ -1034,8 +1109,12 @@ def show_channel_dashboard(platform: str, page: str):
         )
         return fig
 
-    st.plotly_chart(year_line_chart("bereik", "Organisch bereik"),
-                    use_container_width=True)
+    if platform == "tiktok":
+        st.plotly_chart(year_line_chart("weergaven", "Video weergaven"),
+                        use_container_width=True)
+    else:
+        st.plotly_chart(year_line_chart("bereik", "Organisch bereik"),
+                        use_container_width=True)
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -1168,16 +1247,22 @@ def show_dashboard(page: str | None = None):
 
 def show_single_channel(platform: str, page: str):
     """Show dashboard + posts for a single platform/page combination."""
-    # Auto-sync posts via API (gecached voor 15 min)
-    sync_posts_from_api(page)
-    # Sync huidige volgers (gecached voor 15 min)
-    sync_follower_current(page)
+    if platform == "tiktok":
+        # TikTok sync
+        sync_tiktok_followers(page)
+        sync_tiktok_videos(page)
+    else:
+        # Meta sync (Facebook/Instagram)
+        sync_posts_from_api(page)
+        sync_follower_current(page)
 
     label = page.capitalize()
     plat_label = platform.capitalize()
 
     if platform == "facebook":
         _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#0d5a4d" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'
+    elif platform == "tiktok":
+        _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#0d5a4d" stroke="none"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.47a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.53a8.35 8.35 0 0 0 4.76 1.48V6.56a4.84 4.84 0 0 1-1-.13z"/></svg>'
     else:
         _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0d5a4d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="#0d5a4d" stroke="none"/></svg>'
 
@@ -1226,6 +1311,7 @@ def main():
         _PRINS_GREEN = "#0d5a4d"
         _IG_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="{_PRINS_GREEN}" stroke="none"/></svg>'''
         _FB_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'''
+        _TK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.47a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.53a8.35 8.35 0 0 0 4.76 1.48V6.56a4.84 4.84 0 0 1-1-.13z"/></svg>'''
         _CSV_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>'''
 
         _active_nav = st.session_state.nav
@@ -1245,6 +1331,13 @@ def main():
                 st.button("Facebook", key="btn_prins_fb", use_container_width=True,
                           on_click=set_nav, args=("prins_facebook",),
                           type="primary" if _active_nav == "prins_facebook" else "secondary")
+            c1, c2 = st.columns([1, 6])
+            with c1:
+                st.markdown(_TK_ICON, unsafe_allow_html=True)
+            with c2:
+                st.button("TikTok", key="btn_prins_tk", use_container_width=True,
+                          on_click=set_nav, args=("prins_tiktok",),
+                          type="primary" if _active_nav == "prins_tiktok" else "secondary")
 
         with st.expander("Edupet", expanded=st.session_state.nav.startswith("edupet")):
             c1, c2 = st.columns([1, 6])
@@ -1298,12 +1391,27 @@ def main():
                 else:
                     st.warning("Plak eerst een token.")
 
+        # TikTok status
+        if _tiktok_valid:
+            st.markdown("🟢 <span style='font-size:0.75rem; color:#4CAF50;'>TikTok verbonden</span>",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown("🔴 <span style='font-size:0.75rem; color:#e53935;'>TikTok niet verbonden</span>",
+                        unsafe_allow_html=True)
+            if TIKTOK_CLIENT_KEY:
+                from tiktok_api import tiktok_get_auth_url
+                auth_url = tiktok_get_auth_url(TIKTOK_CLIENT_KEY, "https://localhost/callback")
+                st.markdown(f"<a href='{auth_url}' target='_blank' style='font-size:0.75rem;'>TikTok verbinden →</a>",
+                            unsafe_allow_html=True)
+
     # ── Content ──
     nav = st.session_state.nav
     if nav == "prins_instagram":
         show_single_channel("instagram", "prins")
     elif nav == "prins_facebook":
         show_single_channel("facebook", "prins")
+    elif nav == "prins_tiktok":
+        show_single_channel("tiktok", "prins")
     elif nav == "edupet_instagram":
         show_single_channel("instagram", "edupet")
     elif nav == "edupet_facebook":
@@ -1312,5 +1420,114 @@ def main():
         show_upload_tab()
 
 
-if __name__ == "__main__":
+def show_terms_of_service():
+    """Gebruiksvoorwaarden pagina."""
+    st.markdown("""
+    <div style="max-width: 720px; margin: 2rem auto; padding: 0 1rem;">
+        <h1 style="color: #1d1d1f; letter-spacing: -0.02em;">Gebruiksvoorwaarden</h1>
+        <p style="color: #86868b; margin-bottom: 2rem;">Prins Social Tracker</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+**Laatst bijgewerkt: februari 2026**
+
+### 1. Dienst
+Prins Social Tracker ("de App") is een intern social media dashboard
+ontwikkeld door en voor Prins Petfoods B.V. De App verzamelt en toont
+statistieken van sociale-mediakanalen die aan Prins Petfoods zijn gekoppeld.
+
+### 2. Toegang
+De App is uitsluitend bedoeld voor geautoriseerde medewerkers en partners
+van Prins Petfoods B.V. Toegang wordt verleend op uitnodiging.
+
+### 3. Gebruik van gegevens
+De App maakt verbinding met sociale-mediaplatforms (Meta, TikTok) via
+hun officiële API's. Alleen publieke statistieken en eigen accountgegevens
+worden opgehaald. Er worden geen persoonsgegevens van derden verzameld.
+
+### 4. Intellectueel eigendom
+Alle rechten op de App, inclusief het ontwerp en de broncode, berusten bij
+Prins Petfoods B.V.
+
+### 5. Aansprakelijkheid
+De App wordt aangeboden "as is". Prins Petfoods B.V. is niet aansprakelijk
+voor onbeschikbaarheid, gegevensverlies of onjuiste statistieken die
+voortvloeien uit wijzigingen in externe API's.
+
+### 6. Contact
+Prins Petfoods B.V.
+Huizermaatweg 280
+1276 LJ Huizen
+Nederland
+info@prins.nl
+""")
+
+
+def show_privacy_policy():
+    """Privacybeleid pagina."""
+    st.markdown("""
+    <div style="max-width: 720px; margin: 2rem auto; padding: 0 1rem;">
+        <h1 style="color: #1d1d1f; letter-spacing: -0.02em;">Privacybeleid</h1>
+        <p style="color: #86868b; margin-bottom: 2rem;">Prins Social Tracker</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+**Laatst bijgewerkt: februari 2026**
+
+### 1. Verwerkingsverantwoordelijke
+Prins Petfoods B.V.
+Huizermaatweg 280
+1276 LJ Huizen
+Nederland
+info@prins.nl
+
+### 2. Welke gegevens verwerken wij?
+De App verwerkt uitsluitend:
+- **Accountstatistieken** van eigen social-mediakanalen (volgers, views,
+  likes, reacties, shares) via de officiële API's van Meta en TikTok.
+- **Inloggegevens** van geautoriseerde gebruikers (e-mailadres of
+  gebruikersnaam) voor toegangsbeheer.
+
+Wij verzamelen **geen** persoonsgegevens van volgers of bezoekers van
+de sociale-mediakanalen.
+
+### 3. Doel van verwerking
+De gegevens worden uitsluitend gebruikt voor interne rapportage en
+analyse van social media prestaties van Prins Petfoods.
+
+### 4. Bewaartermijn
+Statistieken worden bewaard zolang nodig voor rapportagedoeleinden.
+Toegangsgegevens worden verwijderd wanneer een gebruiker geen toegang
+meer nodig heeft.
+
+### 5. Delen met derden
+Gegevens worden niet gedeeld met derden, behalve met de API-providers
+(Meta, TikTok) voor het ophalen van statistieken conform hun
+ontwikkelaarsvoorwaarden.
+
+### 6. Beveiliging
+Toegang is beperkt tot geautoriseerde gebruikers. API-tokens worden
+versleuteld opgeslagen. De App maakt gebruik van beveiligde
+HTTPS-verbindingen.
+
+### 7. Uw rechten
+U heeft het recht op inzage, correctie en verwijdering van uw gegevens.
+Neem hiervoor contact op via info@prins.nl.
+
+### 8. Cookies
+De App maakt gebruik van functionele sessiecookies die noodzakelijk
+zijn voor de werking. Er worden geen tracking- of advertentiecookies
+gebruikt.
+""")
+
+
+# ── Entrypoint: check query parameters voor legal pages ──
+_query_params = st.query_params
+_page_param = _query_params.get("page", "")
+
+if _page_param == "terms":
+    show_terms_of_service()
+elif _page_param == "privacy":
+    show_privacy_policy()
+elif __name__ == "__main__":
     main()
