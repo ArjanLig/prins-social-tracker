@@ -1441,6 +1441,72 @@ def _show_ai_page():
             st.markdown(st.session_state["ai_page_suggesties"])
 
 
+def _show_remarks_page():
+    """Opmerkingenbord als eigen pagina."""
+    st.markdown("""
+    <div style="padding: 0.5rem 0 0.75rem;">
+        <h2 style="color: #1d1d1f; margin: 0; letter-spacing: -0.02em; font-size: 1.6rem;">
+            Opmerkingen
+        </h2>
+        <p style="color: #86868b; margin: 0.2rem 0 0; font-size: 1.05rem;">
+            Feedback en wijzigingsverzoeken
+        </p>
+        <div style="width: 40px; height: 3px; background: #0d5a4d; border-radius: 2px; margin-top: 0.6rem;"></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Nieuwe opmerking plaatsen
+    st.subheader("Nieuwe opmerking")
+    with st.form("remark_form", clear_on_submit=True):
+        remark_author = st.text_input("Naam", placeholder="Jouw naam")
+        remark_msg = st.text_area("Opmerking", placeholder="Wat moet er veranderd worden?",
+                                  height=120)
+        remark_submit = st.form_submit_button("Plaatsen", use_container_width=True)
+    if remark_submit and remark_author and remark_msg:
+        add_remark(DEFAULT_DB, remark_author, remark_msg)
+        st.success("Opmerking geplaatst!")
+        st.rerun()
+
+    st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
+                unsafe_allow_html=True)
+
+    # Bestaande opmerkingen
+    remarks = get_remarks()
+    open_remarks = [r for r in remarks if r.get("status") != "afgehandeld"]
+    done_remarks = [r for r in remarks if r.get("status") == "afgehandeld"]
+
+    st.subheader(f"Open ({len(open_remarks)})")
+    if open_remarks:
+        for r in open_remarks:
+            ts = (r.get("created_at") or "")[:16].replace("T", " ")
+            col_msg, col_btn = st.columns([5, 1])
+            with col_msg:
+                st.markdown(
+                    f"**{r.get('author', '')}** "
+                    f"<span style='color:#86868b; font-size:0.8rem;'>{ts}</span>",
+                    unsafe_allow_html=True)
+                st.markdown(r.get("message", ""))
+            with col_btn:
+                if st.button("Afhandelen", key=f"remark_done_{r['id']}"):
+                    update_remark_status(DEFAULT_DB, r["id"], "afgehandeld")
+                    st.rerun()
+            st.markdown("<hr style='margin:0.5rem 0; border-color:#e0ece9;'>",
+                        unsafe_allow_html=True)
+    else:
+        st.caption("Geen openstaande opmerkingen.")
+
+    if done_remarks:
+        with st.expander(f"Afgehandeld ({len(done_remarks)})", expanded=False):
+            for r in done_remarks:
+                ts = (r.get("created_at") or "")[:16].replace("T", " ")
+                st.markdown(
+                    f"~~{r.get('message', '')}~~ — **{r.get('author', '')}** "
+                    f"<span style='color:#86868b; font-size:0.8rem;'>{ts}</span>",
+                    unsafe_allow_html=True)
+                st.markdown("<hr style='margin:0.3rem 0; border-color:#f0f0f2;'>",
+                            unsafe_allow_html=True)
+
+
 def main():
     # ── Sidebar navigatie ──
     if "nav" not in st.session_state:
@@ -1479,6 +1545,15 @@ def main():
             st.button("AI Inzichten", key="btn_ai", use_container_width=True,
                       on_click=set_nav, args=("ai_insights",),
                       type="primary" if _active_nav == "ai_insights" else "secondary")
+
+        _REMARK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>'''
+        c1, c2 = st.columns([1, 6])
+        with c1:
+            st.markdown(_REMARK_ICON, unsafe_allow_html=True)
+        with c2:
+            st.button("Opmerkingen", key="btn_remarks", use_container_width=True,
+                      on_click=set_nav, args=("remarks",),
+                      type="primary" if _active_nav == "remarks" else "secondary")
 
         st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
 
@@ -1560,48 +1635,13 @@ def main():
                 st.markdown(f"<a href='{auth_url}' target='_blank' style='font-size:0.75rem;'>TikTok verbinden →</a>",
                             unsafe_allow_html=True)
 
-        # ── Opmerkingenbord ──
-        st.markdown("<hr style='border-color: #1a7a6a; margin: 1.5rem 0 0.5rem;'>",
-                    unsafe_allow_html=True)
-        with st.expander("Opmerkingen", expanded=False):
-            # Nieuwe opmerking toevoegen
-            with st.form("remark_form", clear_on_submit=True):
-                remark_author = st.text_input("Naam", placeholder="Jouw naam")
-                remark_msg = st.text_area("Opmerking", placeholder="Wat moet er veranderd worden?",
-                                          height=80)
-                remark_submit = st.form_submit_button("Plaatsen")
-            if remark_submit and remark_author and remark_msg:
-                add_remark(DEFAULT_DB, remark_author, remark_msg)
-                st.success("Opmerking geplaatst!")
-                st.rerun()
-
-            # Bestaande opmerkingen tonen
-            remarks = get_remarks()
-            if remarks:
-                for r in remarks:
-                    is_done = r.get("status") == "afgehandeld"
-                    ts = (r.get("created_at") or "")[:16].replace("T", " ")
-                    icon = "~~" if is_done else ""
-                    st.markdown(
-                        f"**{r.get('author', '')}** "
-                        f"<span style='color:#86868b; font-size:0.75rem;'>{ts}</span>\n\n"
-                        f"{icon}{r.get('message', '')}{icon}",
-                        unsafe_allow_html=True)
-                    if not is_done:
-                        if st.button("Afhandelen", key=f"remark_done_{r['id']}"):
-                            update_remark_status(DEFAULT_DB, r["id"], "afgehandeld")
-                            st.rerun()
-                    else:
-                        st.caption("Afgehandeld")
-                    st.markdown("<hr style='margin:0.5rem 0; border-color:#e0ece9;'>",
-                                unsafe_allow_html=True)
-            else:
-                st.caption("Nog geen opmerkingen.")
 
     # ── Content ──
     nav = st.session_state.nav
     if nav == "ai_insights":
         _show_ai_page()
+    elif nav == "remarks":
+        _show_remarks_page()
     elif nav == "prins_instagram":
         show_single_channel("instagram", "prins")
     elif nav == "prins_facebook":
