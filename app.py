@@ -71,6 +71,41 @@ _init_db_once()
 # ── Custom styling ──
 st.markdown("""
 <style>
+/* Fullscreen witte overlay met loading spinner bij pagina-wissel */
+div[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+.stApp > header + div::after {
+    content: "";
+    display: none;
+}
+.stApp[data-test-script-state="running"]::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #FFFFFF;
+    z-index: 99999;
+}
+.stApp[data-test-script-state="running"]::after {
+    content: "";
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 40px;
+    height: 40px;
+    margin: -20px 0 0 -20px;
+    border: 3px solid #e0e0e0;
+    border-top-color: #0d5a4d;
+    border-radius: 50%;
+    z-index: 100000;
+    animation: spinner 0.7s linear infinite;
+}
+@keyframes spinner {
+    to { transform: rotate(360deg); }
+}
 </style>
 """, unsafe_allow_html=True)
 
