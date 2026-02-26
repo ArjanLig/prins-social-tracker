@@ -1,4 +1,4 @@
-# app.py
+# app.py  v2.1
 """Prins Social Tracker — Streamlit Dashboard."""
 
 import os
@@ -15,10 +15,8 @@ load_dotenv()
 
 from csv_import import detect_platform, parse_csv_file
 from tiktok_api import (
-    tiktok_check_token,
     tiktok_get_user_info,
     tiktok_get_videos,
-    tiktok_refresh_access_token,
 )
 from database import (
     DEFAULT_DB,
@@ -28,11 +26,13 @@ from database import (
     get_monthly_stats,
     get_posts,
     get_remarks,
+    get_report,
     get_uploads,
     init_db,
     insert_posts,
     log_upload,
     save_follower_snapshot,
+    save_report,
     update_post_labels,
     update_remark_status,
 )
@@ -49,16 +49,10 @@ def _get_secret(key: str, default: str = "") -> str:
 
 st.set_page_config(
     page_title="Prins Social Tracker",
-    page_icon="📊",
+    page_icon=":material/analytics:",
     layout="wide",
 )
 
-# TikTok domeinverificatie
-st.markdown(
-    '<meta name="tiktok-developers-site-verification" '
-    'content="WbgkY4xGEMTNCKBU8LDKzamfs1G0uRxb" />',
-    unsafe_allow_html=True,
-)
 
 # Init database on startup (only once per app deployment)
 @st.cache_resource
@@ -68,46 +62,51 @@ def _init_db_once():
 
 _init_db_once()
 
-# ── Custom styling ──
-st.markdown("""
-<style>
-/* Fullscreen witte overlay met loading spinner bij pagina-wissel */
-div[data-testid="stStatusWidget"] {
+
+def _page_fade_in():
+    """Hide stale content (white flash) and fade in new content."""
+    st.html("""<style>
+/* Hide ALL Streamlit running/status indicators */
+[data-testid="stStatusWidget"],
+[data-testid="stRunningStatus"],
+.stStatusWidget,
+header ~ div:has(> [data-testid="stStatusWidget"]) {
     display: none !important;
+    visibility: hidden !important;
 }
-.stApp > header + div::after {
-    content: "";
-    display: none;
+/* White-out during rerun: hide everything in the main content area */
+.stApp[data-test-script-state="running"] .stMainBlockContainer {
+    opacity: 0 !important;
 }
-.stApp[data-test-script-state="running"]::before {
-    content: "";
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    background: #FFFFFF;
-    z-index: 99999;
-}
+/* Apple-style centered spinner during rerun */
+@keyframes appleSpinner { to { transform: rotate(360deg); } }
 .stApp[data-test-script-state="running"]::after {
     content: "";
     position: fixed;
-    top: 50%;
-    left: 50%;
-    width: 40px;
-    height: 40px;
-    margin: -20px 0 0 -20px;
+    top: 50%; left: 50%;
+    width: 28px; height: 28px;
+    margin: -14px 0 0 -14px;
     border: 3px solid #e0e0e0;
     border-top-color: #0d5a4d;
     border-radius: 50%;
-    z-index: 100000;
-    animation: spinner 0.7s linear infinite;
+    animation: appleSpinner 0.7s linear infinite;
+    z-index: 9999;
 }
-@keyframes spinner {
-    to { transform: rotate(360deg); }
+/* Fade in new content */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
-</style>
-""", unsafe_allow_html=True)
+.stMainBlockContainer [data-testid="stVerticalBlockBorderWrapper"] {
+    animation: fadeIn 0.3s ease-out both;
+}
+.stMainBlockContainer [data-testid="stVerticalBlockBorderWrapper"]:nth-child(2) { animation-delay: 0.04s; }
+.stMainBlockContainer [data-testid="stVerticalBlockBorderWrapper"]:nth-child(3) { animation-delay: 0.08s; }
+.stMainBlockContainer [data-testid="stVerticalBlockBorderWrapper"]:nth-child(4) { animation-delay: 0.12s; }
+.stMainBlockContainer [data-testid="stVerticalBlockBorderWrapper"]:nth-child(5) { animation-delay: 0.16s; }
+.stMainBlockContainer [data-testid="stVerticalBlockBorderWrapper"]:nth-child(n+6) { animation-delay: 0.20s; }
+</style>""")
+
 
 # ── Meta Graph API ──
 FB_API_VERSION = "v22.0"
@@ -117,11 +116,8 @@ META_APP_SECRET = _get_secret("META_APP_SECRET")
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 
-# ── TikTok API ──
-TIKTOK_CLIENT_KEY = _get_secret("TIKTOK_CLIENT_KEY")
-TIKTOK_CLIENT_SECRET = _get_secret("TIKTOK_CLIENT_SECRET")
-TIKTOK_ACCESS_TOKEN = _get_secret("TIKTOK_ACCESS_TOKEN")
-TIKTOK_REFRESH_TOKEN = _get_secret("TIKTOK_REFRESH_TOKEN")
+# ── TikTok (scraper, geen tokens nodig) ──
+TIKTOK_USERNAME = "prinspetfoods"
 
 
 @st.cache_data(ttl=900)
@@ -247,12 +243,6 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
     return True, f"Tokens vernieuwd voor: {', '.join(updated)}"
 
 
-@st.cache_data(ttl=900)
-def _tiktok_check_cached(token: str) -> bool:
-    """Check TikTok token geldigheid (cached 15 min)."""
-    return tiktok_check_token(token)
-
-
 # ── Auto token refresh bij opstarten ──
 _prins_token = _get_secret("PRINS_TOKEN")
 _tokens_valid = _check_token(_prins_token) if _prins_token else False
@@ -267,19 +257,6 @@ if not _tokens_valid:
             load_dotenv(override=True)
             _prins_token = _get_secret("PRINS_TOKEN")
             _tokens_valid = _check_token(_prins_token) if _prins_token else False
-
-# ── Auto TikTok token refresh bij opstarten ──
-_tiktok_token = TIKTOK_ACCESS_TOKEN
-_tiktok_valid = _tiktok_check_cached(_tiktok_token) if _tiktok_token else False
-
-if not _tiktok_valid and TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET and TIKTOK_REFRESH_TOKEN:
-    _tt_result = tiktok_refresh_access_token(TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, TIKTOK_REFRESH_TOKEN)
-    if _tt_result:
-        _update_env("TIKTOK_ACCESS_TOKEN", _tt_result["access_token"])
-        _update_env("TIKTOK_REFRESH_TOKEN", _tt_result["refresh_token"])
-        load_dotenv(override=True)
-        _tiktok_token = _tt_result["access_token"]
-        _tiktok_valid = True
 
 BRAND_CONFIG = {
     "prins": {
@@ -508,10 +485,8 @@ def sync_posts_from_api(brand: str) -> dict:
 
 @st.cache_data(ttl=900)
 def sync_tiktok_followers(brand: str) -> int | None:
-    """Sync TikTok volgers voor een merk (gecached 15 min)."""
-    if not _tiktok_valid or not _tiktok_token:
-        return None
-    user_info = tiktok_get_user_info(_tiktok_token)
+    """Sync TikTok volgers voor een merk via scraper (gecached 15 min)."""
+    user_info = tiktok_get_user_info(TIKTOK_USERNAME)
     if user_info and "follower_count" in user_info:
         count = user_info["follower_count"]
         current_month = datetime.now(timezone.utc).strftime("%Y-%m")
@@ -522,256 +497,13 @@ def sync_tiktok_followers(brand: str) -> int | None:
 
 @st.cache_data(ttl=900)
 def sync_tiktok_videos(brand: str) -> int:
-    """Sync recente TikTok video's voor een merk (gecached 15 min)."""
-    if not _tiktok_valid or not _tiktok_token:
-        return 0
-    videos = tiktok_get_videos(_tiktok_token)
+    """Sync recente TikTok video's via scraper (gecached 15 min)."""
+    videos = tiktok_get_videos(TIKTOK_USERNAME)
     if videos:
         return insert_posts(DEFAULT_DB, videos, "tiktok")
     return 0
 
 
-# ── Prins Petfoods design system (Apple-inspired) ──
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-    /* ── Global ── */
-    html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display',
-                     'Helvetica Neue', Arial, sans-serif;
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
-    }
-    .main .block-container { padding-top: 2rem; }
-
-    /* ── Header bar ── */
-    header[data-testid="stHeader"] {
-        background-color: #fff;
-    }
-
-    /* ── Typography ── */
-    h1, h2, h3 {
-        color: #1d1d1f !important;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-    }
-    h2 { font-size: 2rem; }
-    h3 { font-size: 1.4rem; }
-
-    /* ── Metric cards ── */
-    [data-testid="stMetric"] {
-        background: #0d5a4d;
-        border: none;
-        border-radius: 18px;
-        padding: 20px 24px;
-        box-shadow: none;
-    }
-    [data-testid="stMetric"] label,
-    [data-testid="stMetricLabel"] {
-        color: rgba(255,255,255,0.7) !important;
-        font-size: 0.75rem !important;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.01em;
-    }
-    [data-testid="stMetricValue"] {
-        font-weight: 600;
-        color: #fff;
-        font-size: 1.3rem;
-    }
-    [data-testid="stMetricDelta"],
-    [data-testid="stMetricDelta"] > div {
-        font-size: 0.85rem;
-        color: #fff !important;
-        font-weight: 600;
-        background: transparent !important;
-        background-color: transparent !important;
-    }
-    [data-testid="stMetricDelta"] svg {
-        display: none !important;
-    }
-
-    /* ── Buttons (main content) ── */
-    .main .stButton > button {
-        background-color: #0d5a4d !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 980px !important;
-        padding: 10px 24px !important;
-        font-size: 0.9rem !important;
-        font-weight: 500 !important;
-        transition: background-color 0.2s ease !important;
-    }
-    .main .stButton > button:hover {
-        background-color: #0a4a3f !important;
-        color: white !important;
-    }
-
-    /* ── Sidebar nav buttons ── */
-    section[data-testid="stSidebar"] .stButton > button {
-        background: transparent !important;
-        color: #1d1d1f !important;
-        border: none !important;
-        border-radius: 8px !important;
-        padding: 6px 12px !important;
-        font-size: 0.85rem !important;
-        font-weight: 500 !important;
-        text-align: left !important;
-    }
-    section[data-testid="stSidebar"] .stButton > button:hover {
-        background: rgba(162, 196, 186, 0.2) !important;
-    }
-    section[data-testid="stSidebar"] .stButton > button[kind="primary"] {
-        background: rgba(162, 196, 186, 0.3) !important;
-        border-left: 3px solid #0d5a4d !important;
-        border-radius: 0 8px 8px 0 !important;
-        font-weight: 600 !important;
-    }
-
-    /* ── Inputs & selects ── */
-    .stTextInput > div > div > input,
-    .stNumberInput > div > div > input {
-        border: 1px solid #d2d2d7 !important;
-        border-radius: 12px !important;
-        padding: 10px 14px !important;
-        font-size: 0.95rem !important;
-        background: #fff !important;
-        transition: border-color 0.2s ease !important;
-    }
-    .stTextInput > div > div > input:focus,
-    .stNumberInput > div > div > input:focus {
-        border-color: #0d5a4d !important;
-        box-shadow: 0 0 0 3px rgba(13,90,77,0.15) !important;
-    }
-    [data-baseweb="select"] {
-        border-radius: 12px !important;
-    }
-    .stMultiSelect [data-baseweb="tag"] {
-        background-color: #0d5a4d !important;
-        border-radius: 8px !important;
-    }
-
-    /* ── Tabs ── */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0;
-        border-bottom: 1px solid #f0f0f2;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #86868b;
-        font-weight: 500;
-        padding: 0.75rem 1.25rem;
-        border-radius: 0;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #1d1d1f;
-        font-weight: 600;
-        border-bottom: 2px solid #0d5a4d;
-        background: transparent;
-    }
-
-    /* ── Expanders ── */
-    [data-testid="stExpander"] {
-        border: 1px solid #d2d2d7;
-        border-radius: 18px;
-        box-shadow: none;
-        overflow: hidden;
-    }
-
-    /* ── Data tables ── */
-    [data-testid="stDataFrame"] {
-        border: 1px solid #f0f0f2;
-        border-radius: 18px;
-    }
-
-    /* ── Success messages ── */
-    .stSuccess {
-        background-color: rgba(13,90,77,0.06);
-        border-left-color: #0d5a4d;
-    }
-
-    /* ── Dividers ── */
-    hr {
-        border-color: #f0f0f2 !important;
-    }
-
-    /* ── Sidebar ── */
-    section[data-testid="stSidebar"] {
-        background: #fff;
-        border-right: none;
-    }
-    section[data-testid="stSidebar"] * {
-        color: #1d1d1f;
-    }
-    section[data-testid="stSidebar"] [data-testid="stExpander"] {
-        background-color: transparent;
-        border: none !important;
-        box-shadow: none !important;
-    }
-    section[data-testid="stSidebar"] [data-testid="stExpander"] details {
-        background-color: transparent;
-        border: none !important;
-        box-shadow: none !important;
-        outline: none !important;
-    }
-    section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
-        background-color: #0d5a4d;
-        border-radius: 14px;
-        color: #fff !important;
-        font-weight: 600;
-    }
-    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
-        background-color: #0a4a3f;
-    }
-    section[data-testid="stSidebar"] [data-testid="stExpander"] summary * {
-        color: #fff !important;
-    }
-    section[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
-        background-color: transparent;
-        border: none;
-    }
-    section[data-testid="stSidebar"] .stButton > button {
-        background-color: transparent !important;
-        color: #1d1d1f !important;
-        border: none !important;
-        border-radius: 10px !important;
-        text-align: left;
-        font-weight: 500;
-        padding: 8px 16px !important;
-    }
-    section[data-testid="stSidebar"] .stButton > button:hover {
-        background-color: rgba(13,90,77,0.06) !important;
-        color: #0d5a4d !important;
-    }
-
-    /* ── Caption text ── */
-    .stCaption, [data-testid="stCaptionContainer"] {
-        color: #86868b;
-    }
-
-    /* ── Page transition spinner ── */
-    @keyframes pf-spin { to { transform: rotate(360deg); } }
-    body:has([data-testid="stSidebar"] [data-stale="true"]) [data-testid="stMain"]::before {
-        content: ""; position: fixed; inset: 0; background: #fff; z-index: 9998;
-    }
-    body:has([data-testid="stSidebar"] [data-stale="true"]) [data-testid="stMain"]::after {
-        content: ""; position: fixed; top: 50%; left: 50%;
-        width: 28px; height: 28px; margin: -14px 0 0 -14px;
-        border: 3px solid #e5e5ea; border-top-color: #0d5a4d;
-        border-radius: 50%; animation: pf-spin 0.6s linear infinite; z-index: 9999;
-    }
-
-    /* ── Login page ── */
-    .login-container {
-        max-width: 400px;
-        margin: 4rem auto;
-        padding: 2rem;
-        background: #fff;
-        border-radius: 18px;
-        border: 1px solid #d2d2d7;
-    }
-</style>
-""", unsafe_allow_html=True)
 
 MAAND_NL = {
     1: "Januari", 2: "Februari", 3: "Maart", 4: "April",
@@ -790,12 +522,8 @@ def check_password_DISABLED() -> bool:
 
     col_l, col_c, col_r = st.columns([1, 2, 1])
     with col_c:
-        st.markdown("""
-        <div style="text-align: center; padding: 2rem 0 1rem;">
-            <h1 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">Prins Social Tracker</h1>
-            <p style="color: #86868b; font-size: 1.1rem;">Social media dashboard</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.title("Prins Social Tracker")
+        st.caption("Social media dashboard")
         password = st.text_input("Wachtwoord", type="password")
         if st.button("Inloggen", use_container_width=True):
             if password == st.secrets.get("password", ""):
@@ -817,31 +545,73 @@ def show_posts_table(platform: str, page: str):
     df = pd.DataFrame(posts)
     df["date_parsed"] = pd.to_datetime(df["date"], errors="coerce")
     df["datum_fmt"] = df["date_parsed"].dt.strftime("%d-%m-%Y")
+    df["tijd_fmt"] = df["date_parsed"].dt.strftime("%H:%M")
     df["year"] = df["date_parsed"].dt.year
     df["month_num"] = df["date_parsed"].dt.month
     df = df.sort_values("date_parsed", ascending=False)
 
-    display_cols = ["datum_fmt", "type", "text", "reach", "impressions", "likes",
-                    "comments", "shares", "clicks", "engagement",
-                    "engagement_rate", "theme", "campaign"]
+    if platform == "tiktok":
+        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "impressions", "likes",
+                        "comments", "shares", "engagement",
+                        "engagement_rate", "theme", "campaign"]
+    elif platform == "instagram":
+        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "impressions", "likes",
+                        "comments", "shares", "engagement",
+                        "engagement_rate", "theme", "campaign"]
+    else:
+        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "impressions", "likes",
+                        "comments", "shares", "clicks", "engagement",
+                        "engagement_rate", "theme", "campaign"]
     col_labels = {
-        "datum_fmt": "Datum", "type": "Type", "text": "Omschrijving",
+        "datum_fmt": "Datum", "tijd_fmt": "Tijd", "type": "Type", "text": "Omschrijving",
         "reach": "Bereik", "impressions": "Weergaven", "likes": "Likes",
         "comments": "Reacties", "shares": "Shares", "clicks": "Klikken",
         "engagement": "Engagement", "engagement_rate": "ER%",
         "theme": "Thema", "campaign": "Campagne",
     }
 
+    # Column config for polished data display
+    _col_config = {
+        "id": None,  # Hide internal ID
+        "Datum": st.column_config.TextColumn("Datum", width="small"),
+        "Tijd": st.column_config.TextColumn("Tijd", width="small"),
+        "Type": st.column_config.TextColumn("Type", width="small"),
+        "Omschrijving": st.column_config.TextColumn("Omschrijving", width="large"),
+        "Bereik": st.column_config.NumberColumn("Bereik", format="%d"),
+        "Weergaven": st.column_config.NumberColumn("Weergaven", format="%d"),
+        "Likes": st.column_config.NumberColumn("Likes", format="%d"),
+        "Reacties": st.column_config.NumberColumn("Reacties", format="%d"),
+        "Shares": st.column_config.NumberColumn("Shares", format="%d"),
+        "Klikken": st.column_config.NumberColumn("Klikken", format="%d"),
+        "Engagement": st.column_config.NumberColumn("Engagement", format="%d"),
+        "ER%": st.column_config.NumberColumn("ER%",
+                                                format="%.1f%%"),
+        "Thema": st.column_config.TextColumn("Thema", width="medium"),
+        "Campagne": st.column_config.TextColumn("Campagne", width="medium"),
+    }
+
     years = sorted(df["year"].dropna().unique(), reverse=True)
     for year in years:
         year_df = df[df["year"] == year]
         year_int = int(year)
-        with st.expander(f"{year_int}", expanded=(year == years[0])):
+        with st.expander(f":material/calendar_month: {year_int}", expanded=(year == years[0])):
             months = sorted(year_df["month_num"].dropna().unique())
             for month in months:
                 month_df = year_df[year_df["month_num"] == month]
                 month_name = MAAND_NL.get(int(month), str(int(month)))
-                st.markdown(f"**{month_name}**")
+
+                # Month summary metrics
+                n_posts = len(month_df)
+                total_eng = int(month_df["engagement"].sum())
+                if platform == "tiktok":
+                    avg_metric = month_df["impressions"].mean()
+                    avg_label = "gem. views"
+                else:
+                    avg_metric = month_df["reach"].mean()
+                    avg_label = "gem. bereik"
+                avg_val = f"{avg_metric:,.0f}" if pd.notna(avg_metric) else "0"
+
+                st.caption(f"**{month_name}** — {n_posts} posts  |  {total_eng:,} engagement  |  {avg_val} {avg_label}")
 
                 display_df = month_df[["id"] + display_cols].copy()
                 display_df = display_df.rename(columns=col_labels)
@@ -849,6 +619,7 @@ def show_posts_table(platform: str, page: str):
                 editor_key = f"{key_prefix}_{year_int}_{int(month)}_editor"
                 edited = st.data_editor(
                     display_df,
+                    column_config=_col_config,
                     disabled=[c for c in display_df.columns
                               if c not in ("Thema", "Campagne")],
                     hide_index=True,
@@ -859,7 +630,7 @@ def show_posts_table(platform: str, page: str):
                 # Save changes
                 if not edited.equals(display_df):
                     save_key = f"{key_prefix}_{year_int}_{int(month)}_save"
-                    if st.button("Wijzigingen opslaan", key=save_key):
+                    if st.button(":material/save: Wijzigingen opslaan", key=save_key):
                         for idx in range(len(edited)):
                             row = edited.iloc[idx]
                             orig_row = display_df.iloc[idx] if idx < len(display_df) else None
@@ -870,35 +641,24 @@ def show_posts_table(platform: str, page: str):
                                     update_post_labels(DEFAULT_DB, int(row["id"]), theme_val, campaign_val)
                         st.success("Labels opgeslagen!")
 
-                st.caption(f"{len(month_df)} posts | Engagement: {month_df['engagement'].sum():,} | "
-                           f"Gem. bereik: {month_df['reach'].mean():,.0f}")
-
 
 def show_brand_page(page: str):
     """Show Facebook + Instagram with separate dashboards per channel."""
     label = page.capitalize()
-    st.markdown(f"""
-    <div style="padding: 0.5rem 0 1rem;">
-        <h2 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">{label}</h2>
-        <p style="color: #86868b;">Facebook &amp; Instagram overzicht</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.header(label)
+    st.caption("Facebook & Instagram overzicht")
 
-    tab_fb, tab_ig = st.tabs(["Facebook", "Instagram"])
+    tab_fb, tab_ig = st.tabs([":material/public: Facebook", ":material/photo_camera: Instagram"])
 
     with tab_fb:
         st.subheader(f"{label} — Facebook")
         show_channel_dashboard("facebook", page)
-        st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
-                    unsafe_allow_html=True)
         st.subheader("Posts")
         show_posts_table("facebook", page)
 
     with tab_ig:
         st.subheader(f"{label} — Instagram")
         show_channel_dashboard("instagram", page)
-        st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
-                    unsafe_allow_html=True)
         st.subheader("Posts")
         show_posts_table("instagram", page)
 
@@ -990,9 +750,8 @@ def show_channel_dashboard(platform: str, page: str):
     col1, col2, col3, col4, col5 = st.columns(5)
     if follower_count is not None:
         if follower_delta is not None:
-            arrow = "↑" if follower_delta >= 0 else "↓"
             col1.metric("Volgers", f"{follower_count:,}",
-                         delta=f"{arrow} {follower_delta:+,} deze maand")
+                         delta=f"{follower_delta:+,} deze maand")
         else:
             col1.metric("Volgers", f"{follower_count:,}")
     else:
@@ -1004,8 +763,7 @@ def show_channel_dashboard(platform: str, page: str):
     if len(prev_monthly_counts) > 0:
         avg_posts = prev_monthly_counts.mean()
         diff = posts_this_month - avg_posts
-        arrow = "↑" if diff >= 0 else "↓"
-        posts_delta_str = f"{arrow} {diff:+.0f} vs. gem."
+        posts_delta_str = f"{diff:+.0f} vs. gem."
     col2.metric("Posts deze maand", posts_this_month, delta=posts_delta_str)
     impressions_per_post = df_month['impressions'].mean() if len(df_month) > 0 else 0
     impressions_delta_str = None
@@ -1016,27 +774,22 @@ def show_channel_dashboard(platform: str, page: str):
         if len(prev_imp_per_post) > 0:
             avg_imp = prev_imp_per_post.mean()
             diff = impressions_per_post - avg_imp
-            arrow = "↑" if diff >= 0 else "↓"
-            impressions_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
-    col3.metric("Gem. weergaven/post (deze maand)",
+            impressions_delta_str = f"{diff:+,.0f} vs. gem."
+    col3.metric("Gem. weergaven/post",
                 f"{impressions_per_post:,.0f}" if pd.notna(impressions_per_post) else "0",
                 delta=impressions_delta_str)
     if platform == "tiktok":
-        # TikTok: gebruik views/video i.p.v. bereik (TikTok biedt geen bereik)
-        views_per_post = df_month['impressions'].mean() if len(df_month) > 0 else 0
-        views_delta_str = None
+        total_shares = int(df_month['shares'].sum()) if len(df_month) > 0 else 0
+        shares_delta_str = None
         if len(df_prev_months) > 0:
-            prev_views_per_post = df_prev_months.groupby(
+            prev_monthly_shares = df_prev_months.groupby(
                 df_prev_months["date_parsed"].dt.strftime("%Y-%m")
-            )['impressions'].mean()
-            if len(prev_views_per_post) > 0:
-                avg_views = prev_views_per_post.mean()
-                diff = views_per_post - avg_views
-                arrow = "↑" if diff >= 0 else "↓"
-                views_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
-        col4.metric("Views/video (deze maand)",
-                    f"{views_per_post:,.0f}" if pd.notna(views_per_post) else "0",
-                    delta=views_delta_str)
+            )['shares'].sum()
+            if len(prev_monthly_shares) > 0:
+                avg_shares = prev_monthly_shares.mean()
+                diff = total_shares - avg_shares
+                shares_delta_str = f"{diff:+,.0f} vs. gem."
+        col4.metric("Shares deze maand", f"{total_shares:,}", delta=shares_delta_str)
     else:
         reach_per_post = df_month['reach'].mean() if len(df_month) > 0 else 0
         reach_delta_str = None
@@ -1047,9 +800,8 @@ def show_channel_dashboard(platform: str, page: str):
             if len(prev_reach_per_post) > 0:
                 avg_reach = prev_reach_per_post.mean()
                 diff = reach_per_post - avg_reach
-                arrow = "↑" if diff >= 0 else "↓"
-                reach_delta_str = f"{arrow} {diff:+,.0f} vs. gem."
-        col4.metric("Gem. bereik/post (deze maand)",
+                reach_delta_str = f"{diff:+,.0f} vs. gem."
+        col4.metric("Gem. bereik/post",
                     f"{reach_per_post:,.0f}" if pd.notna(reach_per_post) else "0",
                     delta=reach_delta_str)
 
@@ -1059,7 +811,6 @@ def show_channel_dashboard(platform: str, page: str):
     if len(df_month) > 0 and follower_count and follower_count > 0:
         er_current = (df_month['engagement'].sum() / len(df_month)) / follower_count * 100
 
-        # Langlopend gemiddelde: alle voorgaande maanden (excl. huidige)
         df_prev = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") != current_month]
         if len(df_prev) > 0:
             prev_months = df_prev.groupby(df_prev["date_parsed"].dt.strftime("%Y-%m"))
@@ -1073,11 +824,12 @@ def show_channel_dashboard(platform: str, page: str):
         er_delta_str = None
         if er_avg is not None:
             diff = er_current - er_avg
-            arrow = "↑" if diff >= 0 else "↓"
-            er_delta_str = f"{arrow} {diff:+.2f}% vs. gem."
-        col5.metric("Engagement Rate (deze maand)", f"{er_current:.2f}%", delta=er_delta_str)
+            er_delta_str = f"{diff:+.2f}% vs. gem."
+        col5.metric("Engagement Rate", f"{er_current:.2f}%", delta=er_delta_str,
+                    help="Engagement Rate = gemiddelde (likes + reacties + shares) per post, gedeeld door het aantal volgers × 100%.")
     else:
-        col5.metric("Engagement Rate (deze maand)", "–")
+        col5.metric("Engagement Rate", "–",
+                    help="Engagement Rate = gemiddelde (likes + reacties + shares) per post, gedeeld door het aantal volgers × 100%.")
 
     # Monthly trend line charts per jaar
     df_all["year"] = df_all["date_parsed"].dt.year
@@ -1090,7 +842,10 @@ def show_channel_dashboard(platform: str, page: str):
     key_prefix = f"{page}_{platform}"
     MONTH_LABELS = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun",
                     "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
-    YEAR_COLORS = ["#0d5a4d", "#81b29a", "#d32f2f", "#3d405b", "#f2cc8f"]
+    # Fixed year-to-color mapping so 2026 is always the same color across platforms
+    YEAR_COLOR_MAP = {2024: "#0d5a4d", 2025: "#81b29a", 2026: "#d32f2f",
+                      2027: "#3d405b", 2028: "#f2cc8f"}
+    YEAR_COLOR_DEFAULT = "#86868b"
 
     selected_years = st.multiselect(
         "Jaren vergelijken",
@@ -1115,68 +870,132 @@ def show_channel_dashboard(platform: str, page: str):
             er=("engagement_rate", "mean"),
         )
         by_month = by_month.reindex(range(1, 13))
+        # Bereik per post (hoe ver komt je content)
+        by_month["bereik_per_post"] = (by_month["bereik"] / by_month["posts"]).round(0)
         yearly_data[year] = by_month
 
+    # Volgers-groei per maand uit follower_snapshots
+    yearly_followers = {}
+    for year in sorted(selected_years):
+        monthly_followers = []
+        for m in range(1, 13):
+            month_str = f"{year}-{m:02d}"
+            fc = get_follower_count(DEFAULT_DB, platform, page, month_str)
+            monthly_followers.append(fc)
+        yearly_followers[year] = monthly_followers
+
     layout_base = dict(
-        font=dict(
-            family="-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
-            color="#1d1d1f",
-        ),
+        font=dict(family="Inter, sans-serif", color="#1d1d1f"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=50, b=40),
+        margin=dict(l=20, r=20, t=10, b=40),
         xaxis=dict(
             gridcolor="#f0f0f2", title=None,
             tickvals=list(range(1, 13)), ticktext=MONTH_LABELS,
             tickfont=dict(color="#86868b", size=11),
+            showline=False,
         ),
         yaxis=dict(
             gridcolor="#f0f0f2", title=None,
             tickfont=dict(color="#86868b", size=11),
+            showline=False, zeroline=False,
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1,
                     font=dict(size=12, color="#1d1d1f")),
+        hoverlabel=dict(
+            bgcolor="white", bordercolor="#e0e0e0",
+            font=dict(family="Inter, sans-serif", size=13, color="#1d1d1f"),
+        ),
+        hovermode="x unified",
     )
+
+    def _hex_to_rgba(hex_color, alpha):
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
 
     def year_line_chart(metric, title):
         fig = go.Figure()
         hover_fmt = "%{text}: %{y:.2f}%%<extra></extra>" if metric == "er" else "%{text}: %{y:,.0f}<extra></extra>"
-        for i, year in enumerate(sorted(selected_years)):
-            color = YEAR_COLORS[i % len(YEAR_COLORS)]
+        sorted_years = sorted(selected_years)
+        for i, year in enumerate(sorted_years):
+            color = YEAR_COLOR_MAP.get(year, YEAR_COLOR_DEFAULT)
             values = yearly_data[year][metric]
+            # Area fill: strongest for most recent year, lighter for older
+            is_latest = (year == sorted_years[-1])
+            fill_alpha = 0.15 if is_latest else 0.06
             fig.add_trace(go.Scatter(
                 x=list(range(1, 13)), y=values,
                 name=str(year),
                 mode="lines+markers",
-                line=dict(color=color, width=2),
-                marker=dict(color=color, size=6),
+                line=dict(color=color, width=2.5, shape="spline"),
+                marker=dict(color="white", size=7,
+                            line=dict(color=color, width=2)),
+                fill="tozeroy",
+                fillcolor=_hex_to_rgba(color, fill_alpha),
                 hovertemplate=hover_fmt,
                 text=[f"{MONTH_LABELS[m-1]} {year}" for m in range(1, 13)],
+                connectgaps=True,
             ))
-        fig.update_layout(
-            title=dict(text=title, font=dict(size=13, color="#1d1d1f")),
-            **layout_base,
-        )
+        fig.update_layout(**layout_base)
         return fig
 
     if platform == "tiktok":
+        st.subheader("Video weergaven")
         st.plotly_chart(year_line_chart("weergaven", "Video weergaven"),
                         use_container_width=True)
     else:
+        st.subheader("Organisch bereik")
         st.plotly_chart(year_line_chart("bereik", "Organisch bereik"),
                         use_container_width=True)
 
     col_a, col_b = st.columns(2)
     with col_a:
+        st.subheader("E.R. per post")
         st.plotly_chart(year_line_chart("er", "E.R. per post (gem. per maand)"),
                         use_container_width=True)
     with col_b:
-        st.plotly_chart(year_line_chart("likes", "Likes per maand"),
+        st.subheader("Bereik per post")
+        st.plotly_chart(year_line_chart("bereik_per_post", "Bereik per post"),
                         use_container_width=True)
 
-    st.plotly_chart(year_line_chart("posts", "Aantal posts per maand"),
-                    use_container_width=True)
+    # Volgers-groei grafiek
+    def follower_chart():
+        fig = go.Figure()
+        sorted_years = sorted(selected_years)
+        all_vals = []
+        for year in sorted_years:
+            color = YEAR_COLOR_MAP.get(year, YEAR_COLOR_DEFAULT)
+            values = yearly_followers[year]
+            all_vals.extend([v for v in values if v is not None])
+            is_latest = (year == sorted_years[-1])
+            fill_alpha = 0.15 if is_latest else 0.06
+            fig.add_trace(go.Scatter(
+                x=list(range(1, 13)), y=values,
+                name=str(year),
+                mode="lines+markers",
+                line=dict(color=color, width=2.5, shape="spline"),
+                marker=dict(color="white", size=7,
+                            line=dict(color=color, width=2)),
+                fill="tozeroy",
+                fillcolor=_hex_to_rgba(color, fill_alpha),
+                hovertemplate="%{text}: %{y:,.0f}<extra></extra>",
+                text=[f"{MONTH_LABELS[m-1]} {year}" for m in range(1, 13)],
+                connectgaps=True,
+            ))
+        follower_layout = dict(**layout_base)
+        if all_vals:
+            min_v = min(all_vals)
+            max_v = max(all_vals)
+            padding = (max_v - min_v) * 0.15 or max_v * 0.05
+            follower_layout["yaxis"] = dict(**layout_base["yaxis"],
+                                            range=[min_v - padding, max_v + padding])
+        fig.update_layout(**follower_layout)
+        return fig
+
+    st.subheader("Volgers-groei")
+    st.plotly_chart(follower_chart(), use_container_width=True)
 
 
 def show_dashboard(page: str | None = None):
@@ -1186,13 +1005,9 @@ def show_dashboard(page: str | None = None):
         subtitle = f"{label} — Social Media Overzicht"
     else:
         label = "Totaal"
-        subtitle = "Prins Petfoods &amp; Edupet — Social Media Overzicht"
-    st.markdown(f"""
-    <div style="padding: 0.5rem 0 1rem;">
-        <h2 style="color: #1d1d1f; margin-bottom: 0.25rem; letter-spacing: -0.02em;">Dashboard</h2>
-        <p style="color: #86868b;">{subtitle}</p>
-    </div>
-    """, unsafe_allow_html=True)
+        subtitle = "Prins Petfoods & Edupet — Social Media Overzicht"
+    st.header("Dashboard")
+    st.caption(subtitle)
 
     stats = get_monthly_stats()
     all_posts = get_posts(page=page) if page else get_posts()
@@ -1225,7 +1040,9 @@ def show_dashboard(page: str | None = None):
         if not df_stats.empty:
             MONTH_LABELS = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun",
                             "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
-            YEAR_COLORS = ["#0d5a4d", "#81b29a", "#d32f2f", "#3d405b", "#f2cc8f"]
+            YEAR_COLOR_MAP = {2024: "#0d5a4d", 2025: "#81b29a", 2026: "#d32f2f",
+                              2027: "#3d405b", 2028: "#f2cc8f"}
+            YEAR_COLOR_DEFAULT = "#86868b"
 
             df_stats["month_parsed"] = pd.to_datetime(df_stats["month"])
             df_stats["year"] = df_stats["month_parsed"].dt.year
@@ -1244,56 +1061,116 @@ def show_dashboard(page: str | None = None):
 
             # Per platform: bouw lijnen per jaar
             platforms = sorted(df_stats["platform"].unique())
-            PLATFORM_COLORS = {"facebook": "#0d5a4d", "instagram": "#a2c4ba"}
+            PLATFORM_COLORS = {"facebook": "#0d5a4d", "instagram": "#81b29a",
+                               "tiktok": "#3d405b"}
+
+            def _hex_to_rgba(hex_color, alpha):
+                h = hex_color.lstrip("#")
+                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                return f"rgba({r},{g},{b},{alpha})"
 
             layout_base = dict(
-                font=dict(family="Inter, sans-serif", color="#0d5a4d"),
+                font=dict(family="Inter, sans-serif", color="#1d1d1f"),
                 plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=20, r=20, t=40, b=40),
+                margin=dict(l=20, r=20, t=10, b=40),
                 xaxis=dict(
-                    gridcolor="#e0ece9", title=None,
+                    gridcolor="#f0f0f2", title=None,
                     tickvals=list(range(1, 13)), ticktext=MONTH_LABELS,
+                    tickfont=dict(color="#86868b", size=11),
+                    showline=False,
                 ),
-                yaxis=dict(gridcolor="#e0ece9", title=None),
+                yaxis=dict(
+                    gridcolor="#f0f0f2", title=None,
+                    tickfont=dict(color="#86868b", size=11),
+                    showline=False, zeroline=False,
+                ),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                            xanchor="right", x=1, font=dict(size=12)),
+                            xanchor="right", x=1,
+                            font=dict(size=12, color="#1d1d1f")),
+                hoverlabel=dict(
+                    bgcolor="white", bordercolor="#e0e0e0",
+                    font=dict(family="Inter, sans-serif", size=13, color="#1d1d1f"),
+                ),
+                hovermode="x unified",
             )
 
             def overview_line_chart(metric, title):
                 fig = go.Figure()
-                for year in sorted(selected_years):
+                sorted_yrs = sorted(selected_years)
+                for year in sorted_yrs:
                     for plat in platforms:
                         df_yp = df_stats[(df_stats["year"] == year) & (df_stats["platform"] == plat)]
                         by_month = df_yp.groupby("month_num")[metric].sum()
                         by_month = by_month.reindex(range(1, 13))
-                        yi = sorted(selected_years).index(year)
-                        base_color = PLATFORM_COLORS.get(plat, YEAR_COLORS[0])
-                        # Vary opacity for older years
-                        opacity = 1.0 if yi == len(selected_years) - 1 else 0.5
-                        dash = "solid" if yi == len(selected_years) - 1 else "dot"
+                        yi = sorted_yrs.index(year)
+                        base_color = PLATFORM_COLORS.get(plat, YEAR_COLOR_DEFAULT)
+                        is_latest = (year == sorted_yrs[-1])
+                        fill_alpha = 0.12 if is_latest else 0.04
+                        line_width = 2.5 if is_latest else 1.5
                         fig.add_trace(go.Scatter(
                             x=list(range(1, 13)), y=by_month.values,
                             name=f"{plat.capitalize()} {year}",
                             mode="lines+markers",
-                            line=dict(color=base_color, width=2.5, dash=dash),
-                            marker=dict(color=base_color, size=7),
-                            opacity=opacity,
+                            line=dict(color=base_color, width=line_width,
+                                      shape="spline",
+                                      dash="solid" if is_latest else "dot"),
+                            marker=dict(color="white", size=7 if is_latest else 5,
+                                        line=dict(color=base_color, width=2)),
+                            fill="tozeroy",
+                            fillcolor=_hex_to_rgba(base_color, fill_alpha),
                             hovertemplate="%{text}: %{y:,.0f}<extra></extra>",
                             text=[f"{MONTH_LABELS[m-1]} {year}" for m in range(1, 13)],
+                            connectgaps=True,
                         ))
-                fig.update_layout(
-                    title=dict(text=title, font=dict(size=16, color="#0d5a4d")),
-                    **layout_base,
-                )
+                fig.update_layout(**layout_base)
                 return fig
 
+            st.subheader("Engagement per maand")
             st.plotly_chart(overview_line_chart("total_engagement", "Engagement per maand"),
                             use_container_width=True)
-            st.plotly_chart(overview_line_chart("total_posts", "Aantal posts per maand"),
-                            use_container_width=True)
+            st.subheader("Bereik per maand")
             st.plotly_chart(overview_line_chart("total_reach", "Bereik per maand"),
                             use_container_width=True)
+
+            # Volgers-groei per platform
+            def overview_follower_chart():
+                fig = go.Figure()
+                sorted_yrs = sorted(selected_years)
+                all_vals = []
+                for plat in platforms:
+                    base_color = PLATFORM_COLORS.get(plat, YEAR_COLOR_DEFAULT)
+                    values = []
+                    for m in range(1, 13):
+                        month_str = f"{sorted_yrs[-1]}-{m:02d}"
+                        fc = get_follower_count(DEFAULT_DB, plat, page or "prins", month_str)
+                        values.append(fc)
+                    all_vals.extend([v for v in values if v is not None])
+                    fig.add_trace(go.Scatter(
+                        x=list(range(1, 13)), y=values,
+                        name=plat.capitalize(),
+                        mode="lines+markers",
+                        line=dict(color=base_color, width=2.5, shape="spline"),
+                        marker=dict(color="white", size=7,
+                                    line=dict(color=base_color, width=2)),
+                        fill="tozeroy",
+                        fillcolor=_hex_to_rgba(base_color, 0.1),
+                        hovertemplate="%{text}: %{y:,.0f}<extra></extra>",
+                        text=[f"{MONTH_LABELS[m-1]}" for m in range(1, 13)],
+                        connectgaps=True,
+                    ))
+                f_layout = dict(**layout_base)
+                if all_vals:
+                    min_v = min(all_vals)
+                    max_v = max(all_vals)
+                    padding = (max_v - min_v) * 0.15 or max_v * 0.05
+                    f_layout["yaxis"] = dict(**layout_base["yaxis"],
+                                             range=[min_v - padding, max_v + padding])
+                fig.update_layout(**f_layout)
+                return fig
+
+            st.subheader(f"Volgers-groei {sorted(selected_years)[-1]}")
+            st.plotly_chart(overview_follower_chart(), use_container_width=True)
 
 
 def show_single_channel(platform: str, page: str):
@@ -1310,28 +1187,18 @@ def show_single_channel(platform: str, page: str):
     label = page.capitalize()
     plat_label = platform.capitalize()
 
-    if platform == "facebook":
-        _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#0d5a4d" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'
-    elif platform == "tiktok":
-        _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#0d5a4d" stroke="none"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.47a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.53a8.35 8.35 0 0 0 4.76 1.48V6.56a4.84 4.84 0 0 1-1-.13z"/></svg>'
-    else:
-        _plat_icon = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0d5a4d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="#0d5a4d" stroke="none"/></svg>'
+    PLATFORM_ICONS = {
+        "facebook": ":material/public:",
+        "tiktok": ":material/music_note:",
+        "instagram": ":material/photo_camera:",
+    }
+    icon = PLATFORM_ICONS.get(platform, "")
 
-    st.markdown(f"""
-    <div style="padding: 0.5rem 0 0.75rem;">
-        <h2 style="color: #1d1d1f; margin: 0; letter-spacing: -0.02em; font-size: 1.6rem;
-                   display: flex; align-items: center; gap: 0.5rem;">
-            {plat_label} <span style="display: inline-flex;">{_plat_icon}</span>
-        </h2>
-        <p style="color: #86868b; margin: 0.2rem 0 0; font-size: 1.05rem;">{label} overzicht</p>
-        <div style="width: 40px; height: 3px; background: #0d5a4d; border-radius: 2px; margin-top: 0.6rem;"></div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.header(f"{icon} {plat_label}")
+    st.caption(f"{label} overzicht")
 
     show_channel_dashboard(platform, page)
 
-    st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
-                unsafe_allow_html=True)
     st.subheader("Posts")
     show_posts_table(platform, page)
 
@@ -1397,17 +1264,8 @@ def _ai_cross_suggest(_post_hash: str) -> str:
 
 def _show_ai_page():
     """AI Inzichten als eigen pagina — cross-platform analyse."""
-    st.markdown("""
-    <div style="padding: 0.5rem 0 0.75rem;">
-        <h2 style="color: #1d1d1f; margin: 0; letter-spacing: -0.02em; font-size: 1.6rem;">
-            AI Inzichten
-        </h2>
-        <p style="color: #86868b; margin: 0.2rem 0 0; font-size: 1.05rem;">
-            Analyse over alle kanalen — Prins &amp; Edupet
-        </p>
-        <div style="width: 40px; height: 3px; background: #0d5a4d; border-radius: 2px; margin-top: 0.6rem;"></div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.header(":material/auto_awesome: AI Inzichten")
+    st.caption("Analyse over alle kanalen — Prins & Edupet")
 
     now = datetime.now(timezone.utc)
     current_month = now.strftime("%Y-%m")
@@ -1469,12 +1327,22 @@ def _show_ai_page():
         else:
             selected_month = current_month
 
-        if st.button("Genereer rapport", key="ai_page_rapport_btn"):
-            with st.spinner("AI schrijft rapport..."):
-                result = _ai_cross_report(post_hash, selected_month)
-                st.session_state["ai_page_rapport"] = result
-        if "ai_page_rapport" in st.session_state:
-            st.markdown(st.session_state["ai_page_rapport"])
+        # Check for existing saved report
+        saved = get_report(DEFAULT_DB, selected_month, platform="cross", page="")
+
+        if saved:
+            st.markdown(saved)
+            if st.button(":material/refresh: Opnieuw genereren", key="ai_page_rapport_regen"):
+                with st.spinner("AI schrijft rapport..."):
+                    result = _ai_cross_report(post_hash, selected_month)
+                    save_report(DEFAULT_DB, selected_month, result, platform="cross", page="")
+                    st.rerun()
+        else:
+            if st.button(":material/description: Genereer rapport", key="ai_page_rapport_btn"):
+                with st.spinner("AI schrijft rapport..."):
+                    result = _ai_cross_report(post_hash, selected_month)
+                    save_report(DEFAULT_DB, selected_month, result, platform="cross", page="")
+                    st.rerun()
 
     with tab_analyse:
         if st.button("Genereer analyse", key="ai_page_analyse_btn"):
@@ -1495,17 +1363,8 @@ def _show_ai_page():
 
 def _show_remarks_page():
     """Opmerkingenbord als eigen pagina."""
-    st.markdown("""
-    <div style="padding: 0.5rem 0 0.75rem;">
-        <h2 style="color: #1d1d1f; margin: 0; letter-spacing: -0.02em; font-size: 1.6rem;">
-            Opmerkingen
-        </h2>
-        <p style="color: #86868b; margin: 0.2rem 0 0; font-size: 1.05rem;">
-            Feedback en wijzigingsverzoeken
-        </p>
-        <div style="width: 40px; height: 3px; background: #0d5a4d; border-radius: 2px; margin-top: 0.6rem;"></div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.header(":material/comment: Opmerkingen")
+    st.caption("Feedback en wijzigingsverzoeken")
 
     # Nieuwe opmerking plaatsen
     st.subheader("Nieuwe opmerking")
@@ -1519,9 +1378,6 @@ def _show_remarks_page():
         st.success("Opmerking geplaatst!")
         st.rerun()
 
-    st.markdown("<hr style='border-color: #a2c4ba; margin: 1.5rem 0;'>",
-                unsafe_allow_html=True)
-
     # Bestaande opmerkingen
     remarks = get_remarks()
     open_remarks = [r for r in remarks if r.get("status") != "afgehandeld"]
@@ -1533,17 +1389,12 @@ def _show_remarks_page():
             ts = (r.get("created_at") or "")[:16].replace("T", " ")
             col_msg, col_btn = st.columns([5, 1])
             with col_msg:
-                st.markdown(
-                    f"**{r.get('author', '')}** "
-                    f"<span style='color:#86868b; font-size:0.8rem;'>{ts}</span>",
-                    unsafe_allow_html=True)
+                st.markdown(f"**{r.get('author', '')}** *{ts}*")
                 st.markdown(r.get("message", ""))
             with col_btn:
                 if st.button("Afhandelen", key=f"remark_done_{r['id']}"):
                     update_remark_status(DEFAULT_DB, r["id"], "afgehandeld")
                     st.rerun()
-            st.markdown("<hr style='margin:0.5rem 0; border-color:#e0ece9;'>",
-                        unsafe_allow_html=True)
     else:
         st.caption("Geen openstaande opmerkingen.")
 
@@ -1551,12 +1402,7 @@ def _show_remarks_page():
         with st.expander(f"Afgehandeld ({len(done_remarks)})", expanded=False):
             for r in done_remarks:
                 ts = (r.get("created_at") or "")[:16].replace("T", " ")
-                st.markdown(
-                    f"~~{r.get('message', '')}~~ — **{r.get('author', '')}** "
-                    f"<span style='color:#86868b; font-size:0.8rem;'>{ts}</span>",
-                    unsafe_allow_html=True)
-                st.markdown("<hr style='margin:0.3rem 0; border-color:#f0f0f2;'>",
-                            unsafe_allow_html=True)
+                st.markdown(f"~~{r.get('message', '')}~~ — **{r.get('author', '')}** *{ts}*")
 
 
 def main():
@@ -1567,97 +1413,55 @@ def main():
     def set_nav(value):
         st.session_state.nav = value
 
+    try:
+        st.logo("files/prins_logo.png")
+    except Exception:
+        pass
+
     with st.sidebar:
-        import base64, pathlib
-        _logo_bytes = pathlib.Path("files/prins_logo.png").read_bytes()
-        _logo_b64 = base64.b64encode(_logo_bytes).decode()
-        st.markdown(f"""
-        <div style="text-align: center; padding: 0 1rem 0.4rem; margin-top: -1rem;">
-            <img src="data:image/png;base64,{_logo_b64}" style="width: 120px;">
-            <p style="color: #a2c4ba; font-size: 0.7rem; letter-spacing: 0.15em;
-                      text-transform: uppercase; margin: 0.4rem 0 0; font-weight: 500;">
-                Social Tracker</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.caption("SOCIAL TRACKER")
 
-        st.markdown("<hr style='border-color: #1a7a6a; margin: 0.5rem 0 3rem;'>",
-                    unsafe_allow_html=True)
-
-        _PRINS_GREEN = "#0d5a4d"
-        _IG_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="{_PRINS_GREEN}" stroke="none"/></svg>'''
-        _FB_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>'''
-        _TK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="{_PRINS_GREEN}" stroke="none"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.47a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.53a8.35 8.35 0 0 0 4.76 1.48V6.56a4.84 4.84 0 0 1-1-.13z"/></svg>'''
         _active_nav = st.session_state.nav
 
-        with st.expander("Prins", expanded=st.session_state.nav.startswith("prins")):
-            c1, c2 = st.columns([1, 6])
-            with c1:
-                st.markdown(_IG_ICON, unsafe_allow_html=True)
-            with c2:
-                st.button("Instagram", key="btn_prins_ig", use_container_width=True,
-                          on_click=set_nav, args=("prins_instagram",),
-                          type="primary" if _active_nav == "prins_instagram" else "secondary")
-            c1, c2 = st.columns([1, 6])
-            with c1:
-                st.markdown(_FB_ICON, unsafe_allow_html=True)
-            with c2:
-                st.button("Facebook", key="btn_prins_fb", use_container_width=True,
-                          on_click=set_nav, args=("prins_facebook",),
-                          type="primary" if _active_nav == "prins_facebook" else "secondary")
-            c1, c2 = st.columns([1, 6])
-            with c1:
-                st.markdown(_TK_ICON, unsafe_allow_html=True)
-            with c2:
-                st.button("TikTok", key="btn_prins_tk", use_container_width=True,
-                          on_click=set_nav, args=("prins_tiktok",),
-                          type="primary" if _active_nav == "prins_tiktok" else "secondary")
+        with st.expander(":material/pets: Prins", expanded=st.session_state.nav.startswith("prins")):
+            st.button(":material/photo_camera: Instagram", key="btn_prins_ig",
+                      use_container_width=True,
+                      on_click=set_nav, args=("prins_instagram",),
+                      type="primary" if _active_nav == "prins_instagram" else "secondary")
+            st.button(":material/public: Facebook", key="btn_prins_fb",
+                      use_container_width=True,
+                      on_click=set_nav, args=("prins_facebook",),
+                      type="primary" if _active_nav == "prins_facebook" else "secondary")
+            st.button(":material/music_note: TikTok", key="btn_prins_tk",
+                      use_container_width=True,
+                      on_click=set_nav, args=("prins_tiktok",),
+                      type="primary" if _active_nav == "prins_tiktok" else "secondary")
 
-        with st.expander("Edupet", expanded=st.session_state.nav.startswith("edupet")):
-            c1, c2 = st.columns([1, 6])
-            with c1:
-                st.markdown(_IG_ICON, unsafe_allow_html=True)
-            with c2:
-                st.button("Instagram", key="btn_edupet_ig", use_container_width=True,
-                          on_click=set_nav, args=("edupet_instagram",),
-                          type="primary" if _active_nav == "edupet_instagram" else "secondary")
-            c1, c2 = st.columns([1, 6])
-            with c1:
-                st.markdown(_FB_ICON, unsafe_allow_html=True)
-            with c2:
-                st.button("Facebook", key="btn_edupet_fb", use_container_width=True,
-                          on_click=set_nav, args=("edupet_facebook",),
-                          type="primary" if _active_nav == "edupet_facebook" else "secondary")
+        with st.expander(":material/pets: Edupet", expanded=st.session_state.nav.startswith("edupet")):
+            st.button(":material/photo_camera: Instagram", key="btn_edupet_ig",
+                      use_container_width=True,
+                      on_click=set_nav, args=("edupet_instagram",),
+                      type="primary" if _active_nav == "edupet_instagram" else "secondary")
+            st.button(":material/public: Facebook", key="btn_edupet_fb",
+                      use_container_width=True,
+                      on_click=set_nav, args=("edupet_facebook",),
+                      type="primary" if _active_nav == "edupet_facebook" else "secondary")
 
-        st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
+        st.button(":material/auto_awesome: AI Inzichten", key="btn_ai",
+                  use_container_width=True,
+                  on_click=set_nav, args=("ai_insights",),
+                  type="primary" if _active_nav == "ai_insights" else "secondary")
 
-        _AI_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'''
-        c1, c2 = st.columns([1, 6])
-        with c1:
-            st.markdown(_AI_ICON, unsafe_allow_html=True)
-        with c2:
-            st.button("AI Inzichten", key="btn_ai", use_container_width=True,
-                      on_click=set_nav, args=("ai_insights",),
-                      type="primary" if _active_nav == "ai_insights" else "secondary")
-
-        _REMARK_ICON = f'''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{_PRINS_GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>'''
-        c1, c2 = st.columns([1, 6])
-        with c1:
-            st.markdown(_REMARK_ICON, unsafe_allow_html=True)
-        with c2:
-            st.button("Opmerkingen", key="btn_remarks", use_container_width=True,
-                      on_click=set_nav, args=("remarks",),
-                      type="primary" if _active_nav == "remarks" else "secondary")
+        st.button(":material/comment: Opmerkingen", key="btn_remarks",
+                  use_container_width=True,
+                  on_click=set_nav, args=("remarks",),
+                  type="primary" if _active_nav == "remarks" else "secondary")
 
         # ── Token status ──
-        st.markdown("<hr style='border-color: #1a7a6a; margin: 1.5rem 0 0.5rem;'>",
-                    unsafe_allow_html=True)
-
         if _tokens_valid:
-            st.markdown("🟢 <span style='font-size:0.75rem; color:#4CAF50;'>API verbonden</span>",
-                        unsafe_allow_html=True)
+            st.success("API verbonden", icon=":material/check_circle:")
         else:
-            st.markdown("🔴 <span style='font-size:0.75rem; color:#e53935;'>Token verlopen</span>",
-                        unsafe_allow_html=True)
+            st.error("Token verlopen", icon=":material/error:")
             new_token = st.text_input(
                 "User Token",
                 type="password",
@@ -1674,21 +1478,10 @@ def main():
                 else:
                     st.warning("Plak eerst een token.")
 
-        # TikTok status
-        if _tiktok_valid:
-            st.markdown("🟢 <span style='font-size:0.75rem; color:#4CAF50;'>TikTok verbonden</span>",
-                        unsafe_allow_html=True)
-        else:
-            st.markdown("🔴 <span style='font-size:0.75rem; color:#e53935;'>TikTok niet verbonden</span>",
-                        unsafe_allow_html=True)
-            if TIKTOK_CLIENT_KEY:
-                from tiktok_api import tiktok_get_auth_url
-                auth_url = tiktok_get_auth_url(TIKTOK_CLIENT_KEY, "https://localhost/callback")
-                st.markdown(f"<a href='{auth_url}' target='_blank' style='font-size:0.75rem;'>TikTok verbinden →</a>",
-                            unsafe_allow_html=True)
 
 
     # ── Content ──
+    _page_fade_in()
     nav = st.session_state.nav
     if nav == "ai_insights":
         _show_ai_page()
@@ -1708,12 +1501,8 @@ def main():
 
 def show_terms_of_service():
     """Gebruiksvoorwaarden pagina."""
-    st.markdown("""
-    <div style="max-width: 720px; margin: 2rem auto; padding: 0 1rem;">
-        <h1 style="color: #1d1d1f; letter-spacing: -0.02em;">Gebruiksvoorwaarden</h1>
-        <p style="color: #86868b; margin-bottom: 2rem;">Prins Social Tracker</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("Gebruiksvoorwaarden")
+    st.caption("Prins Social Tracker")
     st.markdown("""
 **Laatst bijgewerkt: februari 2026**
 
@@ -1751,12 +1540,8 @@ info@prins.nl
 
 def show_privacy_policy():
     """Privacybeleid pagina."""
-    st.markdown("""
-    <div style="max-width: 720px; margin: 2rem auto; padding: 0 1rem;">
-        <h1 style="color: #1d1d1f; letter-spacing: -0.02em;">Privacybeleid</h1>
-        <p style="color: #86868b; margin-bottom: 2rem;">Prins Social Tracker</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("Privacybeleid")
+    st.caption("Prins Social Tracker")
     st.markdown("""
 **Laatst bijgewerkt: februari 2026**
 

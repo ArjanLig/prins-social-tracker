@@ -2,8 +2,8 @@ name: Keep Streamlit Alive
 
 on:
   schedule:
-    # Elke 4 uur pingen om slaapstand te voorkomen
-    - cron: "0 */4 * * *"
+    # Elke 30 minuten pingen om slaapstand te voorkomen
+    - cron: "*/30 * * * *"
   workflow_dispatch: # Handmatig starten mogelijk
 
 jobs:
@@ -12,14 +12,15 @@ jobs:
     steps:
       - name: Ping Streamlit app
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
-            "https://prins-social-tracker.streamlit.app/_stcore/health")
+          # Laad de hoofdpagina zodat Streamlit het als bezoek registreert
+          response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            "https://prins-social-tracker.streamlit.app/")
           echo "Status code: $response"
           if [ "$response" -ge 200 ] && [ "$response" -lt 400 ]; then
             echo "App is awake"
           else
-            echo "App responded with $response, retrying in 10s..."
-            sleep 10
-            curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            echo "App responded with $response, waking up..."
+            sleep 15
+            curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
               "https://prins-social-tracker.streamlit.app/"
           fi

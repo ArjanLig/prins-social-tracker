@@ -125,6 +125,15 @@ _SCHEMA = [
         status TEXT DEFAULT 'open',
         created_at TEXT NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS ai_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month TEXT NOT NULL,
+        platform TEXT DEFAULT 'cross',
+        page TEXT DEFAULT '',
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(month, platform, page)
+    )""",
 ]
 
 
@@ -181,12 +190,11 @@ def get_follower_count(db_path: str, platform: str, page: str, month: str) -> in
 @st.cache_data(ttl=300)
 def get_follower_previous_month(db_path: str, platform: str, page: str) -> int | None:
     now = datetime.now(timezone.utc)
-    if now.month == 1:
-        prev_month = f"{now.year - 1}-12"
-    else:
-        prev_month = f"{now.year}-{now.month - 1:02d}"
-    sql = "SELECT followers FROM follower_snapshots WHERE platform = ? AND page = ? AND month = ?"
-    params = [platform, page, prev_month]
+    current_month = now.strftime("%Y-%m")
+    sql = ("SELECT followers FROM follower_snapshots "
+           "WHERE platform = ? AND page = ? AND month < ? "
+           "ORDER BY month DESC LIMIT 1")
+    params = [platform, page, current_month]
     if _USE_TURSO:
         rows = _turso_execute(sql, params)
         return int(rows[0]["followers"]) if rows else None
@@ -453,3 +461,34 @@ def update_remark_status(db_path: str, remark_id: int, status: str) -> None:
         conn.execute(sql, params)
         conn.commit()
         conn.close()
+
+
+def save_report(db_path: str, month: str, content: str,
+                platform: str = "cross", page: str = "") -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    sql = """INSERT INTO ai_reports (month, platform, page, content, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(month, platform, page) DO UPDATE SET
+                 content = excluded.content, created_at = excluded.created_at"""
+    params = [month, platform, page, content, now]
+    if _USE_TURSO:
+        _turso_execute(sql, params)
+    else:
+        conn = _connect(db_path)
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()
+
+
+def get_report(db_path: str, month: str, platform: str = "cross",
+               page: str = "") -> str | None:
+    sql = "SELECT content FROM ai_reports WHERE month = ? AND platform = ? AND page = ?"
+    params = [month, platform, page]
+    if _USE_TURSO:
+        rows = _turso_execute(sql, params)
+        return rows[0]["content"] if rows else None
+    else:
+        conn = _connect(db_path)
+        row = conn.execute(sql, params).fetchone()
+        conn.close()
+        return row["content"] if row else None
