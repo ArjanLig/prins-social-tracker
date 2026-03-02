@@ -20,10 +20,11 @@ from competitors import (
 )
 from database import DEFAULT_DB, init_db, insert_posts, save_follower_snapshot
 
-# Apify als primaire Instagram bron; fallback naar Playwright
+# Apify als primaire bron voor IG + TikTok; fallback naar lokale scrapers
 _USE_APIFY = bool(os.environ.get("APIFY_API_TOKEN"))
 if _USE_APIFY:
     from apify_instagram import apify_scrape_ig_competitor
+    from apify_tiktok import apify_scrape_tk_profiles
 
 
 def _import_fb_scraper():
@@ -242,7 +243,10 @@ def scrape_ig_all() -> dict:
 # ── TikTok ────────────────────────────────────────────────────────────
 
 def scrape_tk_competitor(key: str) -> dict:
-    """Scrape TikTok voor een enkele concurrent."""
+    """Scrape TikTok voor een enkele concurrent.
+
+    Gebruikt Apify als APIFY_API_TOKEN gezet is, anders yt-dlp fallback.
+    """
     if key not in TK_COMPETITORS:
         print(f"Onbekende TikTok-concurrent: {key}")
         return {"posts": 0, "followers": None}
@@ -252,23 +256,46 @@ def scrape_tk_competitor(key: str) -> dict:
     username = comp["username"]
     result = {"posts": 0, "followers": None}
 
-    print(f"\n[{name}] TikTok scraping (@{username})...")
+    source = "Apify" if _USE_APIFY else "yt-dlp"
+    print(f"\n[{name}] TikTok scraping via {source} (@{username})...")
     try:
-        tiktok_get_user_info, tiktok_get_videos = _import_tiktok_api()
-        user_info = tiktok_get_user_info(username)
-        if user_info and "follower_count" in user_info:
-            count = user_info["follower_count"]
-            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
-            save_follower_snapshot(DEFAULT_DB, "tiktok", key,
-                                   count, month=current_month)
-            result["followers"] = count
-            print(f"  Volgers: {count:,}")
+        if _USE_APIFY:
+            from apify_tiktok import apify_scrape_tk_competitor
+            tk_data = apify_scrape_tk_competitor(key)
+            profile = tk_data.get("profile", {})
+            tk_posts = tk_data.get("posts", [])
 
-        videos = tiktok_get_videos(username, page=key)
-        if videos:
-            inserted = insert_posts(DEFAULT_DB, videos, "tiktok")
-            result["posts"] = inserted
-            print(f"  {inserted} video's opgeslagen (van {len(videos)} gevonden)")
+            tk_followers = profile.get("followers", 0)
+            if tk_followers > 0:
+                current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+                save_follower_snapshot(DEFAULT_DB, "tiktok", key,
+                                       tk_followers, month=current_month)
+                result["followers"] = tk_followers
+                print(f"  Volgers: {tk_followers:,}")
+
+            if tk_posts:
+                # Zorg dat page correct is (key, niet username)
+                for p in tk_posts:
+                    p["page"] = key
+                inserted = insert_posts(DEFAULT_DB, tk_posts, "tiktok")
+                result["posts"] = inserted
+                print(f"  {inserted} video's opgeslagen (van {len(tk_posts)} gevonden)")
+        else:
+            tiktok_get_user_info, tiktok_get_videos = _import_tiktok_api()
+            user_info = tiktok_get_user_info(username)
+            if user_info and "follower_count" in user_info:
+                count = user_info["follower_count"]
+                current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+                save_follower_snapshot(DEFAULT_DB, "tiktok", key,
+                                       count, month=current_month)
+                result["followers"] = count
+                print(f"  Volgers: {count:,}")
+
+            videos = tiktok_get_videos(username, page=key)
+            if videos:
+                inserted = insert_posts(DEFAULT_DB, videos, "tiktok")
+                result["posts"] = inserted
+                print(f"  {inserted} video's opgeslagen (van {len(videos)} gevonden)")
     except Exception as e:
         print(f"  TikTok fout: {e}")
 
@@ -276,8 +303,59 @@ def scrape_tk_competitor(key: str) -> dict:
 
 
 def scrape_tk_all() -> dict:
-    """Scrape TikTok voor alle TK-concurrenten."""
-    return {key: scrape_tk_competitor(key) for key in TK_COMPETITORS}
+    """Scrape TikTok voor alle TK-concurrenten.
+
+    Met Apify: één batch-call voor alle profielen tegelijk.
+    Zonder Apify: per profiel apart (yt-dlp fallback).
+    """
+    if not _USE_APIFY:
+        return {key: scrape_tk_competitor(key) for key in TK_COMPETITORS}
+
+    # Eén batch Apify call voor alle concurrenten
+    username_to_key = {}
+    for key, comp in TK_COMPETITORS.items():
+        username_to_key[comp["username"].lower()] = key
+
+    usernames = [comp["username"] for comp in TK_COMPETITORS.values()]
+    print(f"\n[Apify batch] TikTok scraping voor {len(usernames)} concurrenten...")
+
+    try:
+        all_data = apify_scrape_tk_profiles(usernames, videos_per_profile=20)
+    except Exception as e:
+        print(f"  Apify TikTok batch fout: {e}")
+        return {key: {"posts": 0, "followers": None} for key in TK_COMPETITORS}
+
+    results = {}
+    for username_lower, data in all_data.items():
+        key = username_to_key.get(username_lower)
+        if not key:
+            continue
+
+        result = {"posts": 0, "followers": None}
+        profile = data.get("profile", {})
+        tk_posts = data.get("posts", [])
+
+        tk_followers = profile.get("followers", 0)
+        if tk_followers > 0:
+            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+            save_follower_snapshot(DEFAULT_DB, "tiktok", key,
+                                   tk_followers, month=current_month)
+            result["followers"] = tk_followers
+
+        if tk_posts:
+            for p in tk_posts:
+                p["page"] = key
+            result["posts"] = insert_posts(DEFAULT_DB, tk_posts, "tiktok")
+
+        name = TK_COMPETITORS[key]["name"]
+        print(f"  {name}: {result['posts']} video's, volgers: {result.get('followers', '—')}")
+        results[key] = result
+
+    for key in TK_COMPETITORS:
+        if key not in results:
+            results[key] = {"posts": 0, "followers": None}
+
+    return results
 
 
 # ── Gecombineerd ──────────────────────────────────────────────────────
