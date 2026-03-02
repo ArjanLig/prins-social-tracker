@@ -882,9 +882,14 @@ def show_channel_dashboard(platform: str, page: str):
     df_all["date_parsed"] = pd.to_datetime(df_all["date"], errors="coerce")
 
     now = datetime.now(timezone.utc)
-    cutoff_30d = now - pd.Timedelta(days=30)
-    cutoff_60d = now - pd.Timedelta(days=60)
     current_month = now.strftime("%Y-%m")
+    # Maak tz-naive voor vergelijking met geparsede dates
+    now_naive = now.replace(tzinfo=None)
+    cutoff_30d = now_naive - pd.Timedelta(days=30)
+    cutoff_60d = now_naive - pd.Timedelta(days=60)
+    # Strip timezone uit date_parsed als die er is
+    if df_all["date_parsed"].dt.tz is not None:
+        df_all["date_parsed"] = df_all["date_parsed"].dt.tz_localize(None)
     df_30d = df_all[df_all["date_parsed"] >= cutoff_30d]
     df_prev_30d = df_all[(df_all["date_parsed"] >= cutoff_60d) & (df_all["date_parsed"] < cutoff_30d)]
 
@@ -1158,7 +1163,10 @@ def show_dashboard(page: str | None = None):
 
     # KPI cards — laatste 30 dagen
     now = datetime.now(timezone.utc)
-    cutoff_30d_cp = now - pd.Timedelta(days=30)
+    now_naive_cp = now.replace(tzinfo=None)
+    cutoff_30d_cp = now_naive_cp - pd.Timedelta(days=30)
+    if df_all["date_parsed"].dt.tz is not None:
+        df_all["date_parsed"] = df_all["date_parsed"].dt.tz_localize(None)
     df_30d_cp = df_all[df_all["date_parsed"] >= cutoff_30d_cp]
 
     col1, col2, col3, col4 = st.columns(4)
