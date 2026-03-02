@@ -1442,24 +1442,39 @@ def show_benchmark():
                 table_rows.append({
                     "_is_prins": page_key == "prins",
                     "Merk": display_name,
-                    "Volgers": f"{followers:,}" if followers else "—",
+                    "Volgers": followers or 0,
                     "Posts": len(recent_25),
-                    "Likes": f"{total_likes:,}",
-                    "Reacties": f"{total_comments:,}",
-                    "Shares": f"{total_shares:,}",
-                    "Engagement": f"{total_engagement:,}",
-                    "Gem. ER%": f"{avg_er:.4f}%",
+                    "Likes": total_likes,
+                    "Reacties": total_comments,
+                    "Shares": total_shares,
+                    "Engagement": total_engagement,
+                    "Gem. ER%": round(avg_er, 4),
                 })
-            # Prins altijd bovenaan
+            # Prins altijd bovenaan (standaard)
             table_rows.sort(key=lambda r: (0 if r["_is_prins"] else 1))
             df_kpi = pd.DataFrame(table_rows).drop(columns=["_is_prins"])
 
-            def _bold_prins(row):
-                is_prins = row.name == 0  # Prins staat altijd op index 0
-                return ["font-weight: bold" if is_prins else "" for _ in row]
-
-            st.dataframe(df_kpi.style.apply(_bold_prins, axis=1),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_kpi,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Merk": st.column_config.TextColumn("Merk"),
+                    "Volgers": st.column_config.NumberColumn(
+                        "Volgers", format="%d"),
+                    "Posts": st.column_config.NumberColumn("Posts"),
+                    "Likes": st.column_config.NumberColumn(
+                        "Likes", format="%d"),
+                    "Reacties": st.column_config.NumberColumn(
+                        "Reacties", format="%d"),
+                    "Shares": st.column_config.NumberColumn(
+                        "Shares", format="%d"),
+                    "Engagement": st.column_config.NumberColumn(
+                        "Engagement", format="%d"),
+                    "Gem. ER%": st.column_config.NumberColumn(
+                        "Gem. ER%", format="%.4f %%"),
+                },
+            )
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
