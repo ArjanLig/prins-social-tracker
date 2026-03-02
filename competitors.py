@@ -109,12 +109,32 @@ IG_COMPETITORS = {
     },
 }
 
-# ── TikTok concurrenten ── (nog in te vullen door gebruiker)
+# ── TikTok concurrenten ──
 TK_COMPETITORS = {
-    "hills": {
-        "name": "Hill's Pet Nutrition",
-        "username": "hillspet",
-        "color": "#003DA5",
+    "edgardcooper": {
+        "name": "Edgard & Cooper",
+        "username": "edgardcooper",
+        "color": "#F4A460",
+    },
+    "justrussel": {
+        "name": "Just Russel",
+        "username": "justrussel_com",
+        "color": "#FF6B35",
+    },
+    "butternutbox": {
+        "name": "Butternut Box",
+        "username": "butternutbox",
+        "color": "#F0C808",
+    },
+    "wooof": {
+        "name": "Wooof",
+        "username": "wooofhondenvoer",
+        "color": "#17A2B8",
+    },
+    "riverwood": {
+        "name": "Riverwood",
+        "username": "riverwoodpetfood",
+        "color": "#4682B4",
     },
 }
 
