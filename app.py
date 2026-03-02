@@ -1874,8 +1874,11 @@ def main():
                   type="primary" if _active_nav == "remarks" else "secondary")
 
         # ── Token status ──
-        if _tokens_valid:
-            _days = _token_expiry_days(_user_token) if _user_token else None
+        _cur_token = _get_secret("PRINS_TOKEN")
+        _cur_valid = _check_token(_cur_token) if _cur_token else False
+        if _cur_valid:
+            _cur_user = _get_secret("USER_TOKEN")
+            _days = _token_expiry_days(_cur_user) if _cur_user else None
             if _days is not None and _days < 10:
                 st.warning(f"Token verloopt over {_days} dagen — wordt automatisch vernieuwd",
                            icon=":material/schedule:")
