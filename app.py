@@ -1364,7 +1364,7 @@ def _ai_suggest_content(_post_ids: tuple, platform: str, page: str,
 
 def show_benchmark():
     """Benchmark pagina — vergelijk Prins met concurrenten per kanaal."""
-    st.header(":material/leaderboard: Benchmark")
+    st.header(":material/leaderboard: Concurrenten")
     st.caption("Vergelijk Prins met concurrenten — per kanaal")
 
     # ── Clear caches voor verse data ──
@@ -1580,7 +1580,7 @@ def show_benchmark():
                                 st.markdown(f"[:material/open_in_new: Bekijk post]({link})")
 
     with tab_ai:
-        st.subheader("AI Benchmark Analyse")
+        st.subheader("AI Concurrentie Analyse")
         st.caption("Vergelijk Prins met concurrenten via AI")
 
         # Verzamel alle pages over alle platformen voor AI rapport
@@ -1842,7 +1842,7 @@ def main():
                       on_click=set_nav, args=("edupet_facebook",),
                       type="primary" if _active_nav == "edupet_facebook" else "secondary")
 
-        st.button(":material/leaderboard: Benchmark", key="btn_benchmark",
+        st.button(":material/leaderboard: Concurrenten", key="btn_benchmark",
                   use_container_width=True,
                   on_click=set_nav, args=("benchmark",),
                   type="primary" if _active_nav == "benchmark" else "secondary")
