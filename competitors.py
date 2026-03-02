@@ -1,40 +1,122 @@
 # competitors.py
-"""Configuratie van concurrenten voor benchmark-monitoring."""
+"""Per-kanaal configuratie van concurrenten voor benchmark-monitoring."""
 
-COMPETITORS = {
+# ── Facebook concurrenten ──
+FB_COMPETITORS = {
     "hills": {
         "name": "Hill's Pet Nutrition",
-        "fb_slug": "HillsPet",
-        "tiktok_username": "hillspet",
-        "ig_username": "hillspet",
-        "color": "#003DA5",  # Hill's blauw
+        "slug": "HillsPet",
+        "color": "#003DA5",
+    },
+    "justrussel": {
+        "name": "Just Russel",
+        "slug": "DierenvoedingJustRussel",
+        "color": "#FF6B35",
+    },
+    "renske": {
+        "name": "Renske",
+        "slug": "renskenaturalpetfood",
+        "color": "#8B4513",
+    },
+    "butternutbox": {
+        "name": "Butternut Box",
+        "slug": "ButternutBox",
+        "color": "#F0C808",
+    },
+    "acana": {
+        "name": "Acana",
+        "slug": "ACANAPetFoods",
+        "color": "#C41E3A",
+    },
+    "purina": {
+        "name": "Purina",
+        "slug": "purina",
+        "color": "#CC0033",
+    },
+    "tasteofthewild": {
+        "name": "Taste of the Wild",
+        "slug": "tasteofthewildpetfood",
+        "color": "#2E8B57",
+    },
+    "riverwood": {
+        "name": "Riverwood",
+        "slug": "riverwooddiervoeding",
+        "color": "#4682B4",
+    },
+    "carocroc": {
+        "name": "CaroCroc",
+        "slug": "CaroCroc",
+        "color": "#E67E22",
+    },
+    "orijen": {
+        "name": "Orijen",
+        "slug": "ORIJENPetFoods",
+        "color": "#6B2D5B",
+    },
+    "wooof": {
+        "name": "Wooof",
+        "slug": "Wooofdogfood",
+        "color": "#17A2B8",
+    },
+    "naturalbalance": {
+        "name": "Natural Balance",
+        "slug": "naturalbalance",
+        "color": "#228B22",
     },
 }
 
-# Inactief: FB-scraper haalt geen recente posts op voor deze pagina's
-_INACTIVE = {
-    "royalcanin": {
-        "name": "Royal Canin",
-        "fb_slug": "RoyalCanin",
-        "tiktok_username": "royalcanin",
-        "ig_username": "royalcanin",
-        "color": "#E2001A",
-    },
-    "eukanuba": {
-        "name": "Eukanuba",
-        "fb_slug": "Eukanuba",
-        "tiktok_username": "eukanuba",
-        "ig_username": "eukanuba",
-        "color": "#D4A017",
+# ── Instagram concurrenten ── (nog in te vullen door gebruiker)
+IG_COMPETITORS = {
+    "hills": {
+        "name": "Hill's Pet Nutrition",
+        "username": "hillspet",
+        "color": "#003DA5",
     },
 }
 
-# Prins eigen kleuren (voor benchmark charts)
+# ── TikTok concurrenten ── (nog in te vullen door gebruiker)
+TK_COMPETITORS = {
+    "hills": {
+        "name": "Hill's Pet Nutrition",
+        "username": "hillspet",
+        "color": "#003DA5",
+    },
+}
+
+# ── Prins eigen kleuren (voor benchmark charts) ──
 PRINS_COLOR = "#0d5a4d"
 EDUPET_COLOR = "#7ab648"
+
+# ── Gecombineerde naam/kleur lookup voor alle concurrenten ──
+ALL_COMPETITORS = {}
+for _d in [FB_COMPETITORS, IG_COMPETITORS, TK_COMPETITORS]:
+    for _key, _comp in _d.items():
+        if _key not in ALL_COMPETITORS:
+            ALL_COMPETITORS[_key] = {"name": _comp["name"], "color": _comp["color"]}
 
 ALL_BRAND_COLORS = {
     "prins": PRINS_COLOR,
     "edupet": EDUPET_COLOR,
-    **{key: comp["color"] for key, comp in COMPETITORS.items()},
+    **{key: comp["color"] for key, comp in ALL_COMPETITORS.items()},
 }
+
+
+def get_competitor_keys(platform: str) -> list[str]:
+    """Return lijst van competitor keys voor een specifiek platform."""
+    if platform == "facebook":
+        return list(FB_COMPETITORS.keys())
+    elif platform == "instagram":
+        return list(IG_COMPETITORS.keys())
+    elif platform == "tiktok":
+        return list(TK_COMPETITORS.keys())
+    return []
+
+
+def get_competitor_name(key: str) -> str:
+    """Return display name voor een competitor key."""
+    if key == "prins":
+        return "Prins Petfoods"
+    if key == "edupet":
+        return "Edupet"
+    comp = ALL_COMPETITORS.get(key)
+    return comp["name"] if comp else key.capitalize()

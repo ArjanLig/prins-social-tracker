@@ -38,7 +38,11 @@ from database import (
     update_remark_status,
 )
 import ai_insights
-from competitors import COMPETITORS, ALL_BRAND_COLORS
+from competitors import (
+    ALL_BRAND_COLORS,
+    get_competitor_keys,
+    get_competitor_name,
+)
 
 
 # ── Token opslag via Turso (werkt ook op Streamlit Cloud) ──
@@ -1359,80 +1363,15 @@ def _ai_suggest_content(_post_ids: tuple, platform: str, page: str,
 
 
 def show_benchmark():
-    """Benchmark pagina — vergelijk Prins met concurrenten."""
+    """Benchmark pagina — vergelijk Prins met concurrenten per kanaal."""
     st.header(":material/leaderboard: Benchmark")
-    st.caption("Vergelijk Prins met concurrenten — Facebook & TikTok")
+    st.caption("Vergelijk Prins met concurrenten — per kanaal")
 
-    # ── Sync knop ──
-    col_sync, col_info = st.columns([1, 3])
-    with col_sync:
-        if st.button(":material/sync: Sync concurrenten", key="btn_sync_competitors",
-                      use_container_width=True):
-            with st.spinner("Concurrenten scrapen..."):
-                from competitor_scraper import scrape_all_competitors
-                results = scrape_all_competitors()
-                # Clear caches zodat nieuwe data direct zichtbaar is
-                get_benchmark_stats.clear()
-                get_monthly_stats.clear()
-                get_posts.clear()
-                summary_parts = []
-                for key, res in results.items():
-                    name = COMPETITORS[key]["name"]
-                    summary_parts.append(
-                        f"{name}: FB {res.get('fb_posts', 0)} posts, "
-                        f"TikTok {res.get('tiktok_posts', 0)} posts")
-                st.success("Sync voltooid: " + " | ".join(summary_parts))
-                st.rerun()
-    with col_info:
-        st.caption("Instagram is niet beschikbaar voor concurrenten (coming soon)")
-
-    # ── Data ophalen (clear caches voor verse data) ──
-    all_pages = ["prins"] + list(COMPETITORS.keys())
+    # ── Clear caches voor verse data ──
     get_benchmark_stats.clear()
     get_monthly_stats.clear()
     get_posts.clear()
     get_follower_count.clear()
-
-    # ── Auto-sync concurrenten met ontbrekende recente data ──
-    now_dt = datetime.now(timezone.utc)
-    _m6 = now_dt.month - 6
-    _y6 = now_dt.year
-    if _m6 <= 0:
-        _m6 += 12
-        _y6 -= 1
-    _cutoff = f"{_y6}-{_m6:02d}"
-
-    # Check eenmalig per sessie of concurrenten recente data missen
-    if "benchmark_auto_synced" not in st.session_state:
-        from competitor_scraper import scrape_competitor
-        stale_competitors = []
-        for comp_key in COMPETITORS:
-            has_recent = False
-            for plat in ["facebook", "instagram", "tiktok"]:
-                posts = get_posts(platform=plat, page=comp_key)
-                recent = [p for p in posts if (p.get("date") or "") >= _cutoff]
-                if recent:
-                    has_recent = True
-                    break
-            if not has_recent:
-                stale_competitors.append(comp_key)
-
-        if stale_competitors:
-            names = ", ".join(COMPETITORS[k]["name"] for k in stale_competitors)
-            with st.spinner(f"Recente data ontbreekt voor {names} — bezig met scrapen..."):
-                for comp_key in stale_competitors:
-                    scrape_competitor(comp_key)
-                get_benchmark_stats.clear()
-                get_monthly_stats.clear()
-                get_posts.clear()
-                get_follower_count.clear()
-        st.session_state["benchmark_auto_synced"] = True
-
-    benchmark_data = get_benchmark_stats(pages=all_pages)
-
-    if not benchmark_data:
-        st.info("Nog geen benchmark data. Klik op 'Sync concurrenten' om te starten.")
-        return
 
     # ── Tabs per platform ──
     tab_fb, tab_ig, tab_tk, tab_ai = st.tabs(
@@ -1440,25 +1379,52 @@ def show_benchmark():
 
     for tab, platform in [(tab_fb, "facebook"), (tab_ig, "instagram"), (tab_tk, "tiktok")]:
         with tab:
-            platform_data = [r for r in benchmark_data if r.get("platform") == platform]
-            if not platform_data:
-                st.info(f"Geen {platform.capitalize()} data beschikbaar.")
+            comp_keys = get_competitor_keys(platform)
+            all_pages = ["prins"] + comp_keys
+
+            if not comp_keys:
+                st.info(f"Nog geen {platform.capitalize()} concurrenten geconfigureerd.")
                 continue
 
+            # ── Per-platform sync knop ──
+            col_sync, col_count = st.columns([1, 3])
+            with col_sync:
+                if st.button(f":material/sync: Sync {platform.capitalize()}",
+                              key=f"btn_sync_{platform}",
+                              use_container_width=True):
+                    with st.spinner(f"{platform.capitalize()} concurrenten scrapen..."):
+                        from competitor_scraper import scrape_platform
+                        results = scrape_platform(platform)
+                        get_benchmark_stats.clear()
+                        get_monthly_stats.clear()
+                        get_posts.clear()
+                        get_follower_count.clear()
+                        summary_parts = []
+                        for key, res in results.items():
+                            name = get_competitor_name(key)
+                            summary_parts.append(
+                                f"{name}: {res.get('posts', 0)} posts")
+                        st.success("Sync voltooid: " + " | ".join(summary_parts))
+                        st.rerun()
+            with col_count:
+                st.caption(f"{len(comp_keys)} concurrenten geconfigureerd")
+
             # ── KPI vergelijkingstabel (laatste 25 posts per merk) ──
+            benchmark_data = get_benchmark_stats(pages=all_pages)
+            platform_data = [r for r in benchmark_data
+                             if r.get("platform") == platform]
+
+            if not platform_data:
+                st.info(f"Geen {platform.capitalize()} data. Klik sync om te starten.")
+                continue
+
             st.subheader("KPI Vergelijking")
             st.caption("Op basis van de laatste 25 posts per merk")
             current_month = datetime.now(timezone.utc).strftime("%Y-%m")
             table_rows = []
             for row in platform_data:
                 page_key = row.get("page", "")
-                if page_key == "prins":
-                    display_name = "Prins Petfoods"
-                elif page_key in COMPETITORS:
-                    display_name = COMPETITORS[page_key]["name"]
-                else:
-                    display_name = page_key.capitalize()
-                # Haal laatste 25 posts op voor eerlijke vergelijking
+                display_name = get_competitor_name(page_key)
                 all_page_posts = get_posts(platform=platform, page=page_key)
                 recent_25 = sorted(all_page_posts,
                                    key=lambda p: p.get("date", ""),
@@ -1467,10 +1433,8 @@ def show_benchmark():
                 total_comments = sum(p.get("comments", 0) or 0 for p in recent_25)
                 total_shares = sum(p.get("shares", 0) or 0 for p in recent_25)
                 total_engagement = total_likes + total_comments + total_shares
-                # Haal volgers direct op (niet via gecachte benchmark_stats)
                 followers = get_follower_count(DEFAULT_DB, platform,
                                                page_key, current_month)
-                # Bereken ER live op basis van huidige volgers
                 if followers and followers > 0 and recent_25:
                     avg_er = (total_engagement / len(recent_25)) / followers * 100
                 else:
@@ -1511,12 +1475,7 @@ def show_benchmark():
                     entries.sort(key=lambda x: x.get("month", ""))
                     months = [e.get("month", "") for e in entries]
                     engagement = [e.get("total_engagement", 0) for e in entries]
-                    if page_key == "prins":
-                        display_name = "Prins"
-                    elif page_key in COMPETITORS:
-                        display_name = COMPETITORS[page_key]["name"]
-                    else:
-                        display_name = page_key.capitalize()
+                    display_name = get_competitor_name(page_key)
                     color = ALL_BRAND_COLORS.get(page_key, "#888888")
                     fig_eng.add_trace(go.Bar(
                         x=months, y=engagement, name=display_name,
@@ -1533,10 +1492,6 @@ def show_benchmark():
             # ── Top posts per concurrent (laatste 6 maanden) ──
             st.subheader("Top posts per merk")
             st.caption("Laatste 6 maanden, gesorteerd op engagement")
-            six_months_ago = (datetime.now(timezone.utc)
-                              .replace(day=1)
-                              .strftime("%Y-%m"))
-            # Bereken 6 maanden terug
             now = datetime.now(timezone.utc)
             m6 = now.month - 6
             y6 = now.year
@@ -1546,35 +1501,34 @@ def show_benchmark():
             cutoff = f"{y6}-{m6:02d}"
 
             for page_key in all_pages:
-                if page_key == "prins":
-                    display_name = "Prins"
-                elif page_key in COMPETITORS:
-                    display_name = COMPETITORS[page_key]["name"]
-                else:
-                    continue
+                display_name = get_competitor_name(page_key)
                 posts = get_posts(platform=platform, page=page_key)
                 if not posts:
                     continue
-                # Filter laatste 6 maanden
                 recent_posts = [p for p in posts
                                 if (p.get("date") or "") >= cutoff]
                 if not recent_posts:
-                    recent_posts = posts  # Fallback: toon alles als geen recente
+                    recent_posts = posts
                 top_posts = sorted(recent_posts,
                                    key=lambda p: (p.get("likes", 0) or 0)
                                    + (p.get("comments", 0) or 0),
                                    reverse=True)[:5]
                 with st.expander(f"{display_name} — top 5"):
                     for i, p in enumerate(top_posts, 1):
-                        date = (p.get("date") or "")[:10]
+                        raw_date = (p.get("date") or "")[:10]
+                        try:
+                            date = datetime.strptime(raw_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+                        except (ValueError, TypeError):
+                            date = raw_date
                         text = (p.get("text") or "(geen tekst)").replace("\n", "  \n")
                         likes = p.get("likes", 0) or 0
                         comments = p.get("comments", 0) or 0
                         shares = p.get("shares", 0) or 0
                         post_id = p.get("post_id") or p.get("id") or ""
-                        # Bouw link naar post
                         if post_id and platform == "facebook":
                             link = f"https://www.facebook.com/{post_id}"
+                        elif post_id and platform == "instagram":
+                            link = f"https://www.instagram.com/p/{post_id}/"
                         elif post_id and platform == "tiktok":
                             link = f"https://www.tiktok.com/@{page_key}/video/{post_id}"
                         else:
@@ -1593,6 +1547,12 @@ def show_benchmark():
         st.subheader("AI Benchmark Analyse")
         st.caption("Vergelijk Prins met concurrenten via AI")
 
+        # Verzamel alle pages over alle platformen voor AI rapport
+        all_unique_pages = set(["prins"])
+        for plat in ["facebook", "instagram", "tiktok"]:
+            all_unique_pages.update(get_competitor_keys(plat))
+        all_pages_ai = list(all_unique_pages)
+
         saved_report = get_report(DEFAULT_DB, "benchmark", platform="benchmark", page="")
         if saved_report:
             st.markdown(saved_report)
@@ -1600,10 +1560,10 @@ def show_benchmark():
                          key="btn_benchmark_ai_regen"):
                 with st.spinner("AI analyseert concurrenten..."):
                     report = ai_insights.generate_competitive_report(
-                        get_benchmark_stats(pages=all_pages),
+                        get_benchmark_stats(pages=all_pages_ai),
                         {f"{p}_{plat}": get_posts(platform=plat, page=p)
-                         for p in all_pages
-                         for plat in ["facebook", "tiktok"]},
+                         for p in all_pages_ai
+                         for plat in ["facebook", "instagram", "tiktok"]},
                     )
                     save_report(DEFAULT_DB, "benchmark", report,
                                 platform="benchmark", page="")
@@ -1613,10 +1573,10 @@ def show_benchmark():
                          key="btn_benchmark_ai_gen"):
                 with st.spinner("AI analyseert concurrenten..."):
                     report = ai_insights.generate_competitive_report(
-                        get_benchmark_stats(pages=all_pages),
+                        get_benchmark_stats(pages=all_pages_ai),
                         {f"{p}_{plat}": get_posts(platform=plat, page=p)
-                         for p in all_pages
-                         for plat in ["facebook", "tiktok"]},
+                         for p in all_pages_ai
+                         for plat in ["facebook", "instagram", "tiktok"]},
                     )
                     save_report(DEFAULT_DB, "benchmark", report,
                                 platform="benchmark", page="")
