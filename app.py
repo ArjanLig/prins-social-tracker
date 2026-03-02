@@ -383,42 +383,43 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
     return True, f"Tokens vernieuwd voor: {', '.join(updated)}"
 
 
-# ── Auto token refresh bij opstarten ──
-_prins_token = _get_secret("PRINS_TOKEN")
-_tokens_valid = _check_token(_prins_token) if _prins_token else False
-_user_token = _get_secret("USER_TOKEN")
+# ── Auto token refresh (lazy, alleen bij eerste sessie) ──
+def _auto_refresh_tokens():
+    """Vernieuw tokens als nodig. Draait max 1x per sessie."""
+    if st.session_state.get("_tokens_checked"):
+        return
+    st.session_state._tokens_checked = True
+    _prins_token = _get_secret("PRINS_TOKEN")
+    _tokens_valid = _check_token(_prins_token) if _prins_token else False
+    _user_token = _get_secret("USER_TOKEN")
+    _refresh_needed = not _tokens_valid
+    if not _refresh_needed and _user_token:
+        _days_left = _token_expiry_days(_user_token)
+        if _days_left is not None and _days_left < 10:
+            _refresh_needed = True
+    if _refresh_needed and _user_token and META_APP_ID and META_APP_SECRET:
+        _success, _msg = refresh_all_tokens(_user_token)
+        if _success:
+            load_dotenv(override=True)
 
-# Bepaal of refresh nodig is: verlopen OF bijna verlopen (< 10 dagen)
-_refresh_needed = not _tokens_valid
-if not _refresh_needed and _user_token:
-    _days_left = _token_expiry_days(_user_token)
-    if _days_left is not None and _days_left < 10:
-        _refresh_needed = True
-
-if _refresh_needed and _user_token and META_APP_ID and META_APP_SECRET:
-    _success, _msg = refresh_all_tokens(_user_token)
-    if _success:
-        # Herlaad de vernieuwde tokens uit .env
-        load_dotenv(override=True)
-        _prins_token = _get_secret("PRINS_TOKEN")
-        _tokens_valid = _check_token(_prins_token) if _prins_token else False
-
-BRAND_CONFIG = {
-    "prins": {
-        "token": _get_secret("PRINS_TOKEN"),
-        "page_id": _get_secret("PRINS_PAGE_ID"),
-    },
-    "edupet": {
-        "token": _get_secret("EDUPET_TOKEN"),
-        "page_id": _get_secret("EDUPET_PAGE_ID"),
-    },
-}
+def _get_brand_config():
+    """Brand config lazy laden (na token refresh)."""
+    return {
+        "prins": {
+            "token": _get_secret("PRINS_TOKEN"),
+            "page_id": _get_secret("PRINS_PAGE_ID"),
+        },
+        "edupet": {
+            "token": _get_secret("EDUPET_TOKEN"),
+            "page_id": _get_secret("EDUPET_PAGE_ID"),
+        },
+    }
 
 
 @st.cache_data(ttl=900)
 def sync_follower_current(brand: str) -> dict:
     """Snelle sync: haal alleen huidige volgers op (2-3 API calls)."""
-    config = BRAND_CONFIG.get(brand)
+    config = _get_brand_config().get(brand)
     if not config:
         return {}
 
@@ -503,7 +504,7 @@ def sync_follower_current(brand: str) -> dict:
 @st.cache_data(ttl=900)
 def sync_posts_from_api(brand: str) -> dict:
     """Haal recente posts op via de Graph API en sla ze op in de database."""
-    config = BRAND_CONFIG.get(brand)
+    config = _get_brand_config().get(brand)
     if not config:
         return {"facebook": 0, "instagram": 0}
 
@@ -1021,15 +1022,19 @@ def show_channel_dashboard(platform: str, page: str):
         by_month["bereik_per_post"] = (by_month["bereik"] / by_month["posts"]).round(0)
         yearly_data[year] = by_month
 
-    # Volgers-groei per maand uit follower_snapshots
-    yearly_followers = {}
-    for year in sorted(selected_years):
-        monthly_followers = []
-        for m in range(1, 13):
-            month_str = f"{year}-{m:02d}"
-            fc = get_follower_count(DEFAULT_DB, platform, page, month_str)
-            monthly_followers.append(fc)
-        yearly_followers[year] = monthly_followers
+    # Volgers-groei per maand uit follower_snapshots (cached)
+    @st.cache_data(ttl=900)
+    def _get_yearly_followers(_platform, _page, _years):
+        result = {}
+        for year in sorted(_years):
+            monthly = []
+            for m in range(1, 13):
+                fc = get_follower_count(DEFAULT_DB, _platform, _page, f"{year}-{m:02d}")
+                monthly.append(fc)
+            result[year] = monthly
+        return result
+
+    yearly_followers = _get_yearly_followers(platform, page, tuple(selected_years))
 
     layout_base = dict(
         font=dict(family="Inter, sans-serif", color="#1d1d1f"),
@@ -1371,6 +1376,12 @@ def _ai_suggest_content(_post_ids: tuple, platform: str, page: str,
     return ai_insights.suggest_content(posts, platform, page, follower_count)
 
 
+@st.cache_data(ttl=300)
+def _cached_get_posts(platform: str, page: str) -> list:
+    """Gecachte wrapper voor get_posts (5 min)."""
+    return get_posts(platform=platform, page=page)
+
+
 def show_benchmark():
     """Benchmark pagina — vergelijk Prins met concurrenten per kanaal."""
     st.header(":material/leaderboard: Concurrenten")
@@ -1428,7 +1439,7 @@ def show_benchmark():
             for row in platform_data:
                 page_key = row.get("page", "")
                 display_name = get_competitor_name(page_key)
-                all_page_posts = get_posts(platform=platform, page=page_key)
+                all_page_posts = _cached_get_posts(platform=platform, page=page_key)
                 recent_25 = sorted(all_page_posts,
                                    key=lambda p: p.get("date", ""),
                                    reverse=True)[:25]
@@ -1541,7 +1552,7 @@ def show_benchmark():
 
             for page_key in all_pages:
                 display_name = get_competitor_name(page_key)
-                posts = get_posts(platform=platform, page=page_key)
+                posts = _cached_get_posts(platform=platform, page=page_key)
                 if not posts:
                     continue
                 recent_posts = [p for p in posts
@@ -1804,6 +1815,8 @@ def _show_remarks_page():
 
 
 def main():
+    _auto_refresh_tokens()
+
     # ── Sidebar navigatie ──
     if "nav" not in st.session_state:
         st.session_state.nav = "prins_instagram"
