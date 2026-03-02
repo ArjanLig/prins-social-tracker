@@ -891,7 +891,15 @@ def show_channel_dashboard(platform: str, page: str):
     if df_all["date_parsed"].dt.tz is not None:
         df_all["date_parsed"] = df_all["date_parsed"].dt.tz_localize(None)
     df_30d = df_all[df_all["date_parsed"] >= cutoff_30d]
-    df_prev_30d = df_all[(df_all["date_parsed"] >= cutoff_60d) & (df_all["date_parsed"] < cutoff_30d)]
+    df_older = df_all[df_all["date_parsed"] < cutoff_30d]
+
+    # Gemiddelden per 30-dagen periode uit oudere data
+    if len(df_older) > 0:
+        df_older = df_older.copy()
+        df_older["period"] = ((cutoff_30d - df_older["date_parsed"]).dt.days // 30)
+        monthly_groups = df_older.groupby("period")
+    else:
+        monthly_groups = None
 
     # KPI cards — volgers uit database
     follower_count = get_follower_count(DEFAULT_DB, platform, page, current_month)
@@ -915,54 +923,59 @@ def show_channel_dashboard(platform: str, page: str):
     else:
         col1.metric("Volgers", "–")
     posts_30d = len(df_30d)
-    posts_prev_30d = len(df_prev_30d)
     posts_delta_str = None
-    if posts_prev_30d > 0:
-        diff = posts_30d - posts_prev_30d
-        posts_delta_str = f"{diff:+.0f} vs. vorige 30d"
+    if monthly_groups is not None:
+        avg_posts = monthly_groups.size().mean()
+        diff = posts_30d - avg_posts
+        posts_delta_str = f"{diff:+.0f} vs. gem."
     col2.metric("Posts (30 dagen)", posts_30d, delta=posts_delta_str)
     impressions_per_post = df_30d['impressions'].mean() if len(df_30d) > 0 else 0
     impressions_delta_str = None
-    if len(df_prev_30d) > 0:
-        prev_imp = df_prev_30d['impressions'].mean()
-        diff = impressions_per_post - prev_imp
-        impressions_delta_str = f"{diff:+,.0f} vs. vorige 30d"
+    if monthly_groups is not None:
+        avg_imp = monthly_groups['impressions'].mean().mean()
+        diff = impressions_per_post - avg_imp
+        impressions_delta_str = f"{diff:+,.0f} vs. gem."
     col3.metric("Gem. weergaven/post",
                 f"{impressions_per_post:,.0f}" if pd.notna(impressions_per_post) else "0",
                 delta=impressions_delta_str)
     if platform == "tiktok":
         total_shares = int(df_30d['shares'].sum()) if len(df_30d) > 0 else 0
         shares_delta_str = None
-        if len(df_prev_30d) > 0:
-            prev_shares = int(df_prev_30d['shares'].sum())
-            diff = total_shares - prev_shares
-            shares_delta_str = f"{diff:+,.0f} vs. vorige 30d"
+        if monthly_groups is not None:
+            avg_shares = monthly_groups['shares'].sum().mean()
+            diff = total_shares - avg_shares
+            shares_delta_str = f"{diff:+,.0f} vs. gem."
         col4.metric("Shares (30 dagen)", f"{total_shares:,}", delta=shares_delta_str)
     else:
         reach_per_post = df_30d['reach'].mean() if len(df_30d) > 0 else 0
         reach_delta_str = None
-        if len(df_prev_30d) > 0:
-            prev_reach = df_prev_30d['reach'].mean()
-            diff = reach_per_post - prev_reach
-            reach_delta_str = f"{diff:+,.0f} vs. vorige 30d"
+        if monthly_groups is not None:
+            avg_reach = monthly_groups['reach'].mean().mean()
+            diff = reach_per_post - avg_reach
+            reach_delta_str = f"{diff:+,.0f} vs. gem."
         col4.metric("Gem. bereik/post",
                     f"{reach_per_post:,.0f}" if pd.notna(reach_per_post) else "0",
                     delta=reach_delta_str)
 
-    # Engagement Rate laatste 30 dagen vs. vorige 30 dagen
+    # Engagement Rate laatste 30 dagen vs. gemiddelde
     er_current = None
     er_avg = None
     if len(df_30d) > 0 and follower_count and follower_count > 0:
         er_current = (df_30d['engagement'].sum() / len(df_30d)) / follower_count * 100
 
-        if len(df_prev_30d) > 0:
-            er_avg = (df_prev_30d['engagement'].sum() / len(df_prev_30d)) / follower_count * 100
+        if monthly_groups is not None:
+            period_ers = []
+            for _, grp in monthly_groups:
+                if len(grp) > 0:
+                    period_ers.append((grp['engagement'].sum() / len(grp)) / follower_count * 100)
+            if period_ers:
+                er_avg = sum(period_ers) / len(period_ers)
 
     if er_current is not None:
         er_delta_str = None
         if er_avg is not None:
             diff = er_current - er_avg
-            er_delta_str = f"{diff:+.2f}% vs. vorige 30d"
+            er_delta_str = f"{diff:+.2f}% vs. gem."
         col5.metric("Engagement Rate", f"{er_current:.2f}%", delta=er_delta_str,
                     help="Engagement Rate = gemiddelde (likes + reacties + shares) per post, gedeeld door het aantal volgers × 100%.")
     else:
