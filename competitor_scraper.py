@@ -19,14 +19,26 @@ from competitors import (
     get_competitor_name,
 )
 from database import DEFAULT_DB, init_db, insert_posts, save_follower_snapshot
-from fb_scraper import scrape_fb_page_posts
-from ig_scraper import scrape_ig_profile
-from tiktok_api import tiktok_get_user_info, tiktok_get_videos
 
 # Apify als primaire Instagram bron; fallback naar Playwright
 _USE_APIFY = bool(os.environ.get("APIFY_API_TOKEN"))
 if _USE_APIFY:
     from apify_instagram import apify_scrape_ig_competitor
+
+
+def _import_fb_scraper():
+    from fb_scraper import scrape_fb_page_posts
+    return scrape_fb_page_posts
+
+
+def _import_ig_scraper():
+    from ig_scraper import scrape_ig_profile
+    return scrape_ig_profile
+
+
+def _import_tiktok_api():
+    from tiktok_api import tiktok_get_user_info, tiktok_get_videos
+    return tiktok_get_user_info, tiktok_get_videos
 
 
 # ── Facebook ──────────────────────────────────────────────────────────
@@ -47,6 +59,7 @@ def scrape_fb_competitor(key: str) -> dict:
 
     print(f"\n[{name}] Facebook scraping ({slug})...")
     try:
+        scrape_fb_page_posts = _import_fb_scraper()
         fb_data = scrape_fb_page_posts(slug, max_posts=50, max_scrolls=15)
         page_info = fb_data.get("page_info", {})
         fb_posts = fb_data.get("posts", [])
@@ -112,6 +125,7 @@ def scrape_ig_competitor(key: str) -> dict:
         if _USE_APIFY:
             ig_data = apify_scrape_ig_competitor(key)
         else:
+            scrape_ig_profile = _import_ig_scraper()
             ig_data = scrape_ig_profile(username)
 
         profile = ig_data.get("profile", {})
@@ -171,6 +185,7 @@ def scrape_tk_competitor(key: str) -> dict:
 
     print(f"\n[{name}] TikTok scraping (@{username})...")
     try:
+        tiktok_get_user_info, tiktok_get_videos = _import_tiktok_api()
         user_info = tiktok_get_user_info(username)
         if user_info and "follower_count" in user_info:
             count = user_info["follower_count"]
