@@ -4,6 +4,7 @@
 Per-kanaal configuratie: verschillende concurrenten per platform.
 """
 
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -21,6 +22,11 @@ from database import DEFAULT_DB, init_db, insert_posts, save_follower_snapshot
 from fb_scraper import scrape_fb_page_posts
 from ig_scraper import scrape_ig_profile
 from tiktok_api import tiktok_get_user_info, tiktok_get_videos
+
+# Apify als primaire Instagram bron; fallback naar Playwright
+_USE_APIFY = bool(os.environ.get("APIFY_API_TOKEN"))
+if _USE_APIFY:
+    from apify_instagram import apify_scrape_ig_competitor
 
 
 # ── Facebook ──────────────────────────────────────────────────────────
@@ -87,7 +93,10 @@ def scrape_fb_all() -> dict:
 # ── Instagram ─────────────────────────────────────────────────────────
 
 def scrape_ig_competitor(key: str) -> dict:
-    """Scrape Instagram voor een enkele concurrent."""
+    """Scrape Instagram voor een enkele concurrent.
+
+    Gebruikt Apify als APIFY_API_TOKEN gezet is, anders Playwright fallback.
+    """
     if key not in IG_COMPETITORS:
         print(f"Onbekende IG-concurrent: {key}")
         return {"posts": 0, "followers": None}
@@ -97,9 +106,14 @@ def scrape_ig_competitor(key: str) -> dict:
     username = comp["username"]
     result = {"posts": 0, "followers": None}
 
-    print(f"\n[{name}] Instagram scraping (@{username})...")
+    source = "Apify" if _USE_APIFY else "Playwright"
+    print(f"\n[{name}] Instagram scraping via {source} (@{username})...")
     try:
-        ig_data = scrape_ig_profile(username)
+        if _USE_APIFY:
+            ig_data = apify_scrape_ig_competitor(key)
+        else:
+            ig_data = scrape_ig_profile(username)
+
         profile = ig_data.get("profile", {})
         ig_posts = ig_data.get("posts", [])
 
@@ -126,7 +140,7 @@ def scrape_ig_competitor(key: str) -> dict:
                     "shares": 0,
                     "clicks": 0,
                     "page": key,
-                    "source": "scraper",
+                    "source": p.get("source", "scraper"),
                 })
             inserted = insert_posts(DEFAULT_DB, post_dicts, "instagram")
             result["posts"] = inserted
