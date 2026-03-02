@@ -2,13 +2,6 @@
 """Configuratie van concurrenten voor benchmark-monitoring."""
 
 COMPETITORS = {
-    "royalcanin": {
-        "name": "Royal Canin",
-        "fb_slug": "RoyalCanin",
-        "tiktok_username": "royalcanin",
-        "ig_username": "royalcanin",
-        "color": "#E2001A",  # Royal Canin rood
-    },
     "hills": {
         "name": "Hill's Pet Nutrition",
         "fb_slug": "HillsPet",
@@ -16,12 +9,23 @@ COMPETITORS = {
         "ig_username": "hillspet",
         "color": "#003DA5",  # Hill's blauw
     },
+}
+
+# Inactief: FB-scraper haalt geen recente posts op voor deze pagina's
+_INACTIVE = {
+    "royalcanin": {
+        "name": "Royal Canin",
+        "fb_slug": "RoyalCanin",
+        "tiktok_username": "royalcanin",
+        "ig_username": "royalcanin",
+        "color": "#E2001A",
+    },
     "eukanuba": {
         "name": "Eukanuba",
         "fb_slug": "Eukanuba",
         "tiktok_username": "eukanuba",
         "ig_username": "eukanuba",
-        "color": "#D4A017",  # Eukanuba goud
+        "color": "#D4A017",
     },
 }
 

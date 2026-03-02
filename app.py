@@ -1392,6 +1392,37 @@ def show_benchmark():
     get_monthly_stats.clear()
     get_posts.clear()
     get_follower_count.clear()
+
+    # ── Auto-sync concurrenten met ontbrekende recente data ──
+    now_dt = datetime.now(timezone.utc)
+    _m6 = now_dt.month - 6
+    _y6 = now_dt.year
+    if _m6 <= 0:
+        _m6 += 12
+        _y6 -= 1
+    _cutoff = f"{_y6}-{_m6:02d}"
+
+    # Check eenmalig per sessie of concurrenten recente data missen
+    if "benchmark_auto_synced" not in st.session_state:
+        from competitor_scraper import scrape_competitor
+        stale_competitors = []
+        for comp_key in COMPETITORS:
+            posts = get_posts(platform="facebook", page=comp_key)
+            recent = [p for p in posts if (p.get("date") or "") >= _cutoff]
+            if not recent:
+                stale_competitors.append(comp_key)
+
+        if stale_competitors:
+            names = ", ".join(COMPETITORS[k]["name"] for k in stale_competitors)
+            with st.spinner(f"Recente data ontbreekt voor {names} — bezig met scrapen..."):
+                for comp_key in stale_competitors:
+                    scrape_competitor(comp_key)
+                get_benchmark_stats.clear()
+                get_monthly_stats.clear()
+                get_posts.clear()
+                get_follower_count.clear()
+        st.session_state["benchmark_auto_synced"] = True
+
     benchmark_data = get_benchmark_stats(pages=all_pages)
 
     if not benchmark_data:
@@ -1453,12 +1484,16 @@ def show_benchmark():
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
-            all_months_set = sorted({m.get("month", "") for m in monthly_stats
-                                     if m.get("month")})
-            recent_6 = set(all_months_set[-6:]) if len(all_months_set) > 6 else set(all_months_set)
+            now_dt = datetime.now(timezone.utc)
+            m6 = now_dt.month - 6
+            y6 = now_dt.year
+            if m6 <= 0:
+                m6 += 12
+                y6 -= 1
+            cutoff_month = f"{y6}-{m6:02d}"
             competitor_monthly = [m for m in monthly_stats
                                   if m.get("page") in all_pages
-                                  and m.get("month") in recent_6]
+                                  and (m.get("month") or "") >= cutoff_month]
             if competitor_monthly:
                 st.subheader("Maandelijkse engagement")
                 fig_eng = go.Figure()
@@ -1538,12 +1573,15 @@ def show_benchmark():
                             link = f"https://www.tiktok.com/@{page_key}/video/{post_id}"
                         else:
                             link = ""
-                        header = (f"**{i}.** [{date}] "
-                                  f"{likes} likes, {comments} reacties, "
-                                  f"{shares} shares")
-                        if link:
-                            header += f"  \n:material/open_in_new: [Bekijk post]({link})"
-                        st.markdown(f"{header}\n\n> {text}")
+                        with st.container(border=True):
+                            cols = st.columns([0.6, 0.15, 0.15, 0.1])
+                            cols[0].markdown(f"**{i}. {date}**")
+                            cols[1].metric("Likes", f"{likes:,}")
+                            cols[2].metric("Reacties", f"{comments:,}")
+                            cols[3].metric("Shares", f"{shares:,}")
+                            st.caption(text)
+                            if link:
+                                st.markdown(f"[:material/open_in_new: Bekijk post]({link})")
 
     with tab_ai:
         st.subheader("AI Benchmark Analyse")
