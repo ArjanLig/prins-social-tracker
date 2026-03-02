@@ -39,8 +39,101 @@ from database import (
 import ai_insights
 
 
+# ── Token opslag via Turso (werkt ook op Streamlit Cloud) ──
+
+def _init_turso_settings():
+    """Maak app_settings tabel aan in Turso als die niet bestaat."""
+    try:
+        _turso_url = os.getenv("TURSO_DATABASE_URL", "")
+        _turso_token = os.getenv("TURSO_AUTH_TOKEN", "")
+        if not _turso_url or not _turso_token:
+            # Probeer st.secrets
+            try:
+                _turso_url = st.secrets["TURSO_DATABASE_URL"]
+                _turso_token = st.secrets["TURSO_AUTH_TOKEN"]
+            except (KeyError, FileNotFoundError):
+                return
+        url = _turso_url.replace("libsql://", "https://")
+        headers = {"Authorization": f"Bearer {_turso_token}", "Content-Type": "application/json"}
+        body = {"requests": [
+            {"type": "execute", "stmt": {"sql":
+                "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"}},
+            {"type": "close"},
+        ]}
+        requests.post(f"{url}/v3/pipeline", json=body, headers=headers, timeout=10)
+    except Exception:
+        pass
+
+
+def _get_db_setting(key: str) -> str | None:
+    """Haal een waarde op uit de app_settings tabel in Turso."""
+    try:
+        _turso_url = os.getenv("TURSO_DATABASE_URL", "")
+        _turso_token = os.getenv("TURSO_AUTH_TOKEN", "")
+        if not _turso_url or not _turso_token:
+            try:
+                _turso_url = st.secrets["TURSO_DATABASE_URL"]
+                _turso_token = st.secrets["TURSO_AUTH_TOKEN"]
+            except (KeyError, FileNotFoundError):
+                return None
+        url = _turso_url.replace("libsql://", "https://")
+        headers = {"Authorization": f"Bearer {_turso_token}", "Content-Type": "application/json"}
+        body = {"requests": [
+            {"type": "execute", "stmt": {
+                "sql": "SELECT value FROM app_settings WHERE key = ?",
+                "args": [{"type": "text", "value": key}],
+            }},
+            {"type": "close"},
+        ]}
+        resp = requests.post(f"{url}/v3/pipeline", json=body, headers=headers, timeout=10)
+        resp.raise_for_status()
+        rows = resp.json().get("results", [{}])[0].get("response", {}).get("result", {}).get("rows", [])
+        if rows:
+            return rows[0][0].get("value")
+    except Exception:
+        pass
+    return None
+
+
+def _save_db_setting(key: str, value: str):
+    """Sla een waarde op in de app_settings tabel in Turso."""
+    try:
+        _turso_url = os.getenv("TURSO_DATABASE_URL", "")
+        _turso_token = os.getenv("TURSO_AUTH_TOKEN", "")
+        if not _turso_url or not _turso_token:
+            try:
+                _turso_url = st.secrets["TURSO_DATABASE_URL"]
+                _turso_token = st.secrets["TURSO_AUTH_TOKEN"]
+            except (KeyError, FileNotFoundError):
+                return
+        url = _turso_url.replace("libsql://", "https://")
+        headers = {"Authorization": f"Bearer {_turso_token}", "Content-Type": "application/json"}
+        now = datetime.now(timezone.utc).isoformat()
+        body = {"requests": [
+            {"type": "execute", "stmt": {
+                "sql": "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                "args": [
+                    {"type": "text", "value": key},
+                    {"type": "text", "value": value},
+                    {"type": "text", "value": now},
+                ],
+            }},
+            {"type": "close"},
+        ]}
+        requests.post(f"{url}/v3/pipeline", json=body, headers=headers, timeout=10)
+    except Exception:
+        pass
+
+
+_init_turso_settings()
+
+
 def _get_secret(key: str, default: str = "") -> str:
-    """Haal waarde op uit st.secrets (Streamlit Cloud) of os.getenv (lokaal)."""
+    """Haal waarde op: Turso DB → st.secrets → os.getenv."""
+    # Check Turso DB eerst (bevat vernieuwde tokens)
+    db_val = _get_db_setting(key)
+    if db_val:
+        return db_val
     try:
         return st.secrets[key]
     except (KeyError, FileNotFoundError):
@@ -213,21 +306,27 @@ def _get_permanent_page_tokens(user_token: str) -> dict:
 
 
 def _update_env(key: str, value: str):
-    """Update of voeg een key toe in het .env bestand."""
-    lines = []
-    found = False
-    if os.path.exists(ENV_PATH):
-        with open(ENV_PATH, "r") as f:
-            lines = f.readlines()
-    for i, line in enumerate(lines):
-        if line.startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
-            found = True
-            break
-    if not found:
-        lines.append(f"{key}={value}\n")
-    with open(ENV_PATH, "w") as f:
-        f.writelines(lines)
+    """Update een secret in Turso DB (cloud) en .env (lokaal)."""
+    # Sla op in Turso (werkt op Streamlit Cloud)
+    _save_db_setting(key, value)
+    # Sla op in .env (werkt lokaal)
+    try:
+        lines = []
+        found = False
+        if os.path.exists(ENV_PATH):
+            with open(ENV_PATH, "r") as f:
+                lines = f.readlines()
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}="):
+                lines[i] = f"{key}={value}\n"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={value}\n")
+        with open(ENV_PATH, "w") as f:
+            f.writelines(lines)
+    except OSError:
+        pass  # Streamlit Cloud: geen schrijfbare .env
 
 
 def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
