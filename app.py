@@ -1735,7 +1735,11 @@ gebruikt.
 _query_params = st.query_params
 _page_param = _query_params.get("page", "")
 
-if _page_param == "terms":
+if _page_param == "ping":
+    # Health-check endpoint voor UptimeRobot — houdt de app wakker
+    st.write("pong")
+    st.stop()
+elif _page_param == "terms":
     show_terms_of_service()
 elif _page_param == "privacy":
     show_privacy_policy()
