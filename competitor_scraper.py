@@ -79,7 +79,7 @@ def scrape_fb_competitor(key: str) -> dict:
     return result
 
 
-def scrape_fb_all() -> dict[str, dict]:
+def scrape_fb_all() -> dict:
     """Scrape Facebook voor alle FB-concurrenten."""
     return {key: scrape_fb_competitor(key) for key in FB_COMPETITORS}
 
@@ -137,7 +137,7 @@ def scrape_ig_competitor(key: str) -> dict:
     return result
 
 
-def scrape_ig_all() -> dict[str, dict]:
+def scrape_ig_all() -> dict:
     """Scrape Instagram voor alle IG-concurrenten."""
     return {key: scrape_ig_competitor(key) for key in IG_COMPETITORS}
 
@@ -177,7 +177,7 @@ def scrape_tk_competitor(key: str) -> dict:
     return result
 
 
-def scrape_tk_all() -> dict[str, dict]:
+def scrape_tk_all() -> dict:
     """Scrape TikTok voor alle TK-concurrenten."""
     return {key: scrape_tk_competitor(key) for key in TK_COMPETITORS}
 
@@ -203,7 +203,7 @@ def scrape_platform(platform: str, key: str = "") -> dict:
         return {}
 
 
-def scrape_all_competitors() -> dict[str, dict[str, dict]]:
+def scrape_all_competitors() -> dict:
     """Scrape alle platformen voor alle concurrenten.
 
     Returns: {"facebook": {key: result}, "instagram": {...}, "tiktok": {...}}

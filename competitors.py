@@ -101,7 +101,7 @@ ALL_BRAND_COLORS = {
 }
 
 
-def get_competitor_keys(platform: str) -> list[str]:
+def get_competitor_keys(platform: str) -> list:
     """Return lijst van competitor keys voor een specifiek platform."""
     if platform == "facebook":
         return list(FB_COMPETITORS.keys())
