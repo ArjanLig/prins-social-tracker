@@ -1382,6 +1382,19 @@ def _cached_get_posts(platform: str, page: str) -> list:
     return get_posts(platform=platform, page=page)
 
 
+@st.cache_data(ttl=300)
+def _cached_get_all_platform_posts(platform: str) -> dict:
+    """Haal alle posts voor een platform op in 1 DB call, gegroepeerd per page."""
+    all_posts = get_posts(platform=platform)
+    by_page = {}
+    for p in all_posts:
+        pg = p.get("page", "")
+        if pg not in by_page:
+            by_page[pg] = []
+        by_page[pg].append(p)
+    return by_page
+
+
 def show_benchmark():
     """Benchmark pagina — vergelijk Prins met concurrenten per kanaal."""
     st.header(":material/leaderboard: Concurrenten")
@@ -1434,12 +1447,12 @@ def show_benchmark():
 
             st.subheader("KPI Vergelijking")
             st.caption("Op basis van de laatste 25 posts per merk")
-            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+            all_platform_posts = _cached_get_all_platform_posts(platform)
             table_rows = []
             for row in platform_data:
                 page_key = row.get("page", "")
                 display_name = get_competitor_name(page_key)
-                all_page_posts = _cached_get_posts(platform=platform, page=page_key)
+                all_page_posts = all_platform_posts.get(page_key, [])
                 recent_25 = sorted(all_page_posts,
                                    key=lambda p: p.get("date", ""),
                                    reverse=True)[:25]
@@ -1447,8 +1460,7 @@ def show_benchmark():
                 total_comments = sum(p.get("comments", 0) or 0 for p in recent_25)
                 total_shares = sum(p.get("shares", 0) or 0 for p in recent_25)
                 total_engagement = total_likes + total_comments + total_shares
-                followers = get_follower_count(DEFAULT_DB, platform,
-                                               page_key, current_month)
+                followers = row.get("latest_followers") or 0
                 if followers and followers > 0 and recent_25:
                     avg_er = (total_engagement / len(recent_25)) / followers * 100
                 else:
@@ -1552,7 +1564,7 @@ def show_benchmark():
 
             for page_key in all_pages:
                 display_name = get_competitor_name(page_key)
-                posts = _cached_get_posts(platform=platform, page=page_key)
+                posts = all_platform_posts.get(page_key, [])
                 if not posts:
                     continue
                 recent_posts = [p for p in posts

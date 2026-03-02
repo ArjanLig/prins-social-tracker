@@ -540,13 +540,29 @@ def get_benchmark_stats(db_path: str = DEFAULT_DB,
         conn.close()
         rows = [dict(r) for r in raw]
 
-    # Voeg laatste volgers-snapshot toe per page/platform
+    # Voeg laatste volgers-snapshot toe per page/platform (één query i.p.v. N)
+    now_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    follower_map = {}
+    if rows:
+        f_sql = "SELECT platform, page, followers FROM follower_snapshots WHERE month = ?"
+        f_params = [now_month]
+        if _USE_TURSO:
+            f_rows = _turso_execute(f_sql, f_params)
+        else:
+            conn = _connect(db_path)
+            f_raw = conn.execute(f_sql, f_params).fetchall()
+            conn.close()
+            f_rows = [dict(r) for r in f_raw]
+        for fr in f_rows:
+            key = (fr.get("platform", ""), fr.get("page", ""))
+            try:
+                follower_map[key] = int(fr["followers"])
+            except (ValueError, TypeError):
+                pass
+
     for row in rows:
-        page = row.get("page", "")
-        platform = row.get("platform", "")
-        now_month = datetime.now(timezone.utc).strftime("%Y-%m")
-        fc = get_follower_count(db_path, platform, page, now_month)
-        row["latest_followers"] = fc
+        key = (row.get("platform", ""), row.get("page", ""))
+        row["latest_followers"] = follower_map.get(key)
 
     return rows
 
