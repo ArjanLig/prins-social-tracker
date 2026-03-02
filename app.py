@@ -1450,31 +1450,47 @@ def show_benchmark():
                     "Engagement": total_engagement,
                     "Gem. ER%": round(avg_er, 4),
                 })
-            # Prins altijd bovenaan (standaard)
-            table_rows.sort(key=lambda r: (0 if r["_is_prins"] else 1))
-            df_kpi = pd.DataFrame(table_rows).drop(columns=["_is_prins"])
+            # Splits Prins (vast bovenaan, bold) en concurrenten (sorteerbaar)
+            prins_rows = [r for r in table_rows if r["_is_prins"]]
+            comp_rows = [r for r in table_rows if not r["_is_prins"]]
 
-            st.dataframe(
-                df_kpi,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Merk": st.column_config.TextColumn("Merk"),
-                    "Volgers": st.column_config.NumberColumn(
-                        "Volgers", format="%d"),
-                    "Posts": st.column_config.NumberColumn("Posts"),
-                    "Likes": st.column_config.NumberColumn(
-                        "Likes", format="%d"),
-                    "Reacties": st.column_config.NumberColumn(
-                        "Reacties", format="%d"),
-                    "Shares": st.column_config.NumberColumn(
-                        "Shares", format="%d"),
-                    "Engagement": st.column_config.NumberColumn(
-                        "Engagement", format="%d"),
-                    "Gem. ER%": st.column_config.NumberColumn(
-                        "Gem. ER%", format="%.4f %%"),
-                },
-            )
+            _kpi_col_config = {
+                "Merk": st.column_config.TextColumn("Merk"),
+                "Volgers": st.column_config.NumberColumn(
+                    "Volgers", format="%d"),
+                "Posts": st.column_config.NumberColumn("Posts"),
+                "Likes": st.column_config.NumberColumn(
+                    "Likes", format="%d"),
+                "Reacties": st.column_config.NumberColumn(
+                    "Reacties", format="%d"),
+                "Shares": st.column_config.NumberColumn(
+                    "Shares", format="%d"),
+                "Engagement": st.column_config.NumberColumn(
+                    "Engagement", format="%d"),
+                "Gem. ER%": st.column_config.NumberColumn(
+                    "Gem. ER%", format="%.4f %%"),
+            }
+
+            # Prins rij — vast bovenaan, bold
+            if prins_rows:
+                df_prins = pd.DataFrame(prins_rows).drop(columns=["_is_prins"])
+                st.dataframe(
+                    df_prins.style.apply(
+                        lambda _row: ["font-weight: bold"] * len(_row), axis=1),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=_kpi_col_config,
+                )
+
+            # Concurrenten — sorteerbaar via kolomkop
+            if comp_rows:
+                df_comp = pd.DataFrame(comp_rows).drop(columns=["_is_prins"])
+                st.dataframe(
+                    df_comp,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=_kpi_col_config,
+                )
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
