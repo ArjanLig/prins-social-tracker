@@ -364,3 +364,65 @@ def chat_with_data_stream(data_summary: str, messages: list[dict]):
                 yield content
     except Exception as e:
         yield f"\n\n⚠️ OpenAI fout: {e}"
+
+
+def generate_competitive_report(benchmark_stats: list[dict],
+                                all_posts: dict[str, list[dict]]) -> str:
+    """Genereer een AI benchmark-rapport dat Prins vergelijkt met concurrenten.
+
+    benchmark_stats: output van get_benchmark_stats()
+    all_posts: {"{page}_{platform}": [posts...]}
+    """
+    lines = ["# Benchmark Data\n"]
+
+    # KPI overzicht
+    lines.append("## KPI per merk/platform")
+    lines.append("Merk | Platform | Posts | Likes | Reacties | Shares | "
+                 "Engagement | Gem.ER% | Volgers")
+    lines.append("--- | --- | --- | --- | --- | --- | --- | --- | ---")
+    for row in benchmark_stats:
+        page = row.get("page", "")
+        platform = row.get("platform", "")
+        followers = row.get("latest_followers")
+        lines.append(
+            f"{page} | {platform} | {row.get('total_posts', 0)} | "
+            f"{row.get('total_likes', 0)} | {row.get('total_comments', 0)} | "
+            f"{row.get('total_shares', 0)} | {row.get('total_engagement', 0)} | "
+            f"{row.get('avg_engagement_rate', 0):.2f}% | "
+            f"{followers if followers else '—'}")
+
+    # Top posts per merk
+    for key, posts in sorted(all_posts.items()):
+        if not posts:
+            continue
+        top = sorted(posts,
+                     key=lambda p: (p.get("likes", 0) or 0) + (p.get("comments", 0) or 0),
+                     reverse=True)[:5]
+        lines.append(f"\n## Top posts — {key}")
+        for i, p in enumerate(top, 1):
+            date = (p.get("date") or "")[:10]
+            text = (p.get("text") or "")[:100].replace("\n", " ")
+            likes = p.get("likes", 0) or 0
+            comments = p.get("comments", 0) or 0
+            lines.append(f"  {i}. ({date}) {likes} likes, {comments} reacties — \"{text}\"")
+
+    data_summary = "\n".join(lines)
+
+    system_prompt = (
+        "Je bent een senior social media strateeg die werkt voor Prins Petfoods, "
+        "een Nederlands premium diervoedingsbedrijf. Je analyseert de concurrentie "
+        "(Royal Canin, Hill's, Eukanuba) en vergelijkt hun social media prestaties "
+        "met die van Prins. Schrijf een professioneel benchmark-rapport in het Nederlands.\n\n"
+        "Structuur:\n"
+        "## Concurrentie Benchmark Rapport\n\n"
+        "1. **Marktpositie** — waar staat Prins t.o.v. concurrenten (volgers, bereik, engagement)\n"
+        "2. **Sterke punten Prins** — wat doet Prins beter dan de concurrentie\n"
+        "3. **Zwakke punten Prins** — waar lopen concurrenten voor\n"
+        "4. **Content lessen** — wat kunnen we leren van de content van concurrenten\n"
+        "5. **Actieplan** — 5 concrete acties om Prins' positie te versterken\n\n"
+        "Wees specifiek met cijfers. Verwijs naar concrete posts of patronen. "
+        "Focus op actionable inzichten."
+    )
+
+    return _call_openai(system_prompt,
+                        f"Analyseer deze benchmark data:\n\n{data_summary}")

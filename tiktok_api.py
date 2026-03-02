@@ -72,7 +72,7 @@ def tiktok_get_user_info(username: str) -> dict | None:
         return None
 
 
-def tiktok_get_videos(username: str, max_count: int = 20) -> list[dict]:
+def tiktok_get_videos(username: str, max_count: int = 20, page: str = "prins") -> list[dict]:
     """Haal recente TikTok video's op met metrics via yt-dlp.
 
     Mapt velden naar het interne post-formaat:
@@ -131,7 +131,7 @@ def tiktok_get_videos(username: str, max_count: int = 20) -> list[dict]:
             "comments": v.get("comment_count", 0) or 0,
             "shares": v.get("repost_count", 0) or 0,
             "clicks": 0,
-            "page": "prins",
+            "page": page,
             "source": "scraper",
         })
     return posts

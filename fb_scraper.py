@@ -128,18 +128,34 @@ def _extract_page_info(page) -> dict:
         info["name"] = (name.split(" | ")[0].split(" - ")[0]
                         .replace("Facebook", "").strip())
 
-        body = page.inner_text("body")[:2000]
-        # "37 d. volgers" = 37K (d. = duizend)
-        fm = re.search(r'([\d.,]+)\s*(?:d\.)?\s*(?:volgers|followers)', body, re.I)
+        body = page.inner_text("body")[:5000]
+        # Patronen: "37 d. volgers", "4,2 mln. volgers", "13M followers", "1.234 followers"
+        fm = re.search(
+            r'([\d.,]+)\s*(mln\.?|mln|[KkMm]|d\.)\s*(?:volgers|followers)',
+            body, re.I)
         if fm:
             num = fm.group(1)
-            if "d." in fm.group(0):
-                info["followers"] = int(float(num.replace(".", "").replace(",", ".")) * 1000)
+            suffix = (fm.group(2) or "").strip().lower().rstrip(".")
+            raw = float(num.replace(".", "").replace(",", "."))
+            if suffix in ("k", "d"):
+                info["followers"] = int(raw * 1_000)
+            elif suffix in ("m", "mln"):
+                info["followers"] = int(raw * 1_000_000)
             else:
-                info["followers"] = _parse_number(num)
-        lm = re.search(r'([\d.,]+)\s*(?:vind-ik-leuks|likes)', body, re.I)
+                info["followers"] = int(raw)
+        lm = re.search(
+            r'([\d.,]+)\s*(mln\.?|mln|[KkMm])?\s*(?:vind-ik-leuks|likes)',
+            body, re.I)
         if lm:
-            info["likes"] = _parse_number(lm.group(1))
+            num = lm.group(1)
+            suffix = (lm.group(2) or "").strip().lower().rstrip(".")
+            raw = float(num.replace(".", "").replace(",", "."))
+            if suffix in ("k",):
+                info["likes"] = int(raw * 1_000)
+            elif suffix in ("m", "mln"):
+                info["likes"] = int(raw * 1_000_000)
+            else:
+                info["likes"] = int(raw)
     except Exception:
         pass
     return info

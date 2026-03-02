@@ -21,6 +21,7 @@ from tiktok_api import (
 from database import (
     DEFAULT_DB,
     add_remark,
+    get_benchmark_stats,
     get_follower_count,
     get_follower_previous_month,
     get_monthly_stats,
@@ -37,6 +38,7 @@ from database import (
     update_remark_status,
 )
 import ai_insights
+from competitors import COMPETITORS, ALL_BRAND_COLORS
 
 
 # ── Token opslag via Turso (werkt ook op Streamlit Cloud) ──
@@ -1356,6 +1358,177 @@ def _ai_suggest_content(_post_ids: tuple, platform: str, page: str,
     return ai_insights.suggest_content(posts, platform, page, follower_count)
 
 
+def show_benchmark():
+    """Benchmark pagina — vergelijk Prins met concurrenten."""
+    st.header(":material/leaderboard: Benchmark")
+    st.caption("Vergelijk Prins met concurrenten — Facebook & TikTok")
+
+    # ── Sync knop ──
+    col_sync, col_info = st.columns([1, 3])
+    with col_sync:
+        if st.button(":material/sync: Sync concurrenten", key="btn_sync_competitors",
+                      use_container_width=True):
+            with st.spinner("Concurrenten scrapen..."):
+                from competitor_scraper import scrape_all_competitors
+                results = scrape_all_competitors()
+                # Clear caches zodat nieuwe data direct zichtbaar is
+                get_benchmark_stats.clear()
+                get_monthly_stats.clear()
+                get_posts.clear()
+                summary_parts = []
+                for key, res in results.items():
+                    name = COMPETITORS[key]["name"]
+                    summary_parts.append(
+                        f"{name}: FB {res.get('fb_posts', 0)} posts, "
+                        f"TikTok {res.get('tiktok_posts', 0)} posts")
+                st.success("Sync voltooid: " + " | ".join(summary_parts))
+                st.rerun()
+    with col_info:
+        st.caption("Instagram is niet beschikbaar voor concurrenten (coming soon)")
+
+    # ── Data ophalen ──
+    all_pages = ["prins"] + list(COMPETITORS.keys())
+    benchmark_data = get_benchmark_stats(pages=all_pages)
+
+    if not benchmark_data:
+        st.info("Nog geen benchmark data. Klik op 'Sync concurrenten' om te starten.")
+        return
+
+    # ── Tabs per platform ──
+    tab_fb, tab_tk, tab_ai = st.tabs(["Facebook", "TikTok", "AI Analyse"])
+
+    for tab, platform in [(tab_fb, "facebook"), (tab_tk, "tiktok")]:
+        with tab:
+            platform_data = [r for r in benchmark_data if r.get("platform") == platform]
+            if not platform_data:
+                st.info(f"Geen {platform.capitalize()} data beschikbaar.")
+                continue
+
+            # ── KPI vergelijkingstabel ──
+            st.subheader("KPI Vergelijking")
+            table_rows = []
+            for row in platform_data:
+                page_key = row.get("page", "")
+                if page_key == "prins":
+                    display_name = "Prins Petfoods"
+                elif page_key in COMPETITORS:
+                    display_name = COMPETITORS[page_key]["name"]
+                else:
+                    display_name = page_key.capitalize()
+                followers = row.get("latest_followers")
+                table_rows.append({
+                    "Merk": display_name,
+                    "Volgers": f"{followers:,}" if followers else "—",
+                    "Posts": row.get("total_posts", 0),
+                    "Likes": f"{row.get('total_likes', 0):,}",
+                    "Reacties": f"{row.get('total_comments', 0):,}",
+                    "Shares": f"{row.get('total_shares', 0):,}",
+                    "Engagement": f"{row.get('total_engagement', 0):,}",
+                    "Gem. ER%": f"{row.get('avg_engagement_rate', 0):.2f}%",
+                })
+            st.dataframe(pd.DataFrame(table_rows), use_container_width=True,
+                         hide_index=True)
+
+            # ── Engagement vergelijking (maandelijks, laatste 6 maanden) ──
+            monthly_stats = get_monthly_stats(platform=platform)
+            all_months_set = sorted({m.get("month", "") for m in monthly_stats
+                                     if m.get("page") in all_pages and m.get("month")})
+            recent_months = all_months_set[-6:] if len(all_months_set) > 6 else all_months_set
+            competitor_monthly = [m for m in monthly_stats
+                                  if m.get("page") in all_pages
+                                  and m.get("month") in recent_months]
+            if competitor_monthly:
+                st.subheader("Maandelijkse engagement")
+                fig_eng = go.Figure()
+                pages_monthly = {}
+                for m in competitor_monthly:
+                    p = m.get("page", "")
+                    pages_monthly.setdefault(p, []).append(m)
+                for page_key, entries in sorted(pages_monthly.items()):
+                    entries.sort(key=lambda x: x.get("month", ""))
+                    months = [e.get("month", "") for e in entries]
+                    engagement = [e.get("total_engagement", 0) for e in entries]
+                    if page_key == "prins":
+                        display_name = "Prins"
+                    elif page_key in COMPETITORS:
+                        display_name = COMPETITORS[page_key]["name"]
+                    else:
+                        display_name = page_key.capitalize()
+                    color = ALL_BRAND_COLORS.get(page_key, "#888888")
+                    fig_eng.add_trace(go.Bar(
+                        x=months, y=engagement, name=display_name,
+                        marker_color=color,
+                    ))
+                fig_eng.update_layout(
+                    barmode="group",
+                    xaxis_title="Maand", yaxis_title="Engagement",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    margin=dict(t=40, b=40),
+                )
+                st.plotly_chart(fig_eng, use_container_width=True)
+
+            # ── Top posts per concurrent ──
+            st.subheader("Top posts per merk")
+            for page_key in all_pages:
+                if page_key == "prins":
+                    display_name = "Prins"
+                elif page_key in COMPETITORS:
+                    display_name = COMPETITORS[page_key]["name"]
+                else:
+                    continue
+                posts = get_posts(platform=platform, page=page_key)
+                if not posts:
+                    continue
+                top_posts = sorted(posts,
+                                   key=lambda p: (p.get("likes", 0) or 0)
+                                   + (p.get("comments", 0) or 0),
+                                   reverse=True)[:5]
+                with st.expander(f"{display_name} — top 5"):
+                    for i, p in enumerate(top_posts, 1):
+                        date = (p.get("date") or "")[:10]
+                        text = (p.get("text") or "(geen tekst)")[:120]
+                        likes = p.get("likes", 0) or 0
+                        comments = p.get("comments", 0) or 0
+                        shares = p.get("shares", 0) or 0
+                        st.markdown(
+                            f"**{i}.** [{date}] {likes} likes, "
+                            f"{comments} reacties, {shares} shares\n\n"
+                            f"> {text}")
+
+    with tab_ai:
+        st.subheader("AI Benchmark Analyse")
+        st.caption("Vergelijk Prins met concurrenten via AI")
+
+        saved_report = get_report(DEFAULT_DB, "benchmark", platform="benchmark", page="")
+        if saved_report:
+            st.markdown(saved_report)
+            if st.button(":material/refresh: Opnieuw genereren",
+                         key="btn_benchmark_ai_regen"):
+                with st.spinner("AI analyseert concurrenten..."):
+                    report = ai_insights.generate_competitive_report(
+                        get_benchmark_stats(pages=all_pages),
+                        {f"{p}_{plat}": get_posts(platform=plat, page=p)
+                         for p in all_pages
+                         for plat in ["facebook", "tiktok"]},
+                    )
+                    save_report(DEFAULT_DB, "benchmark", report,
+                                platform="benchmark", page="")
+                    st.rerun()
+        else:
+            if st.button(":material/auto_awesome: Genereer benchmark rapport",
+                         key="btn_benchmark_ai_gen"):
+                with st.spinner("AI analyseert concurrenten..."):
+                    report = ai_insights.generate_competitive_report(
+                        get_benchmark_stats(pages=all_pages),
+                        {f"{p}_{plat}": get_posts(platform=plat, page=p)
+                         for p in all_pages
+                         for plat in ["facebook", "tiktok"]},
+                    )
+                    save_report(DEFAULT_DB, "benchmark", report,
+                                platform="benchmark", page="")
+                    st.rerun()
+
+
 @st.cache_data(ttl=300)
 def _gather_all_data() -> tuple[dict[str, list[dict]], dict[str, int | None]]:
     """Verzamel alle post-data en volgers voor alle merken/platformen (cached 5 min)."""
@@ -1579,6 +1752,11 @@ def main():
                       on_click=set_nav, args=("edupet_facebook",),
                       type="primary" if _active_nav == "edupet_facebook" else "secondary")
 
+        st.button(":material/leaderboard: Benchmark", key="btn_benchmark",
+                  use_container_width=True,
+                  on_click=set_nav, args=("benchmark",),
+                  type="primary" if _active_nav == "benchmark" else "secondary")
+
         st.button(":material/auto_awesome: AI Inzichten", key="btn_ai",
                   use_container_width=True,
                   on_click=set_nav, args=("ai_insights",),
@@ -1622,7 +1800,9 @@ def main():
     # ── Content ──
     _page_fade_in()
     nav = st.session_state.nav
-    if nav == "ai_insights":
+    if nav == "benchmark":
+        show_benchmark()
+    elif nav == "ai_insights":
         _show_ai_page()
     elif nav == "remarks":
         _show_remarks_page()

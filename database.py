@@ -492,3 +492,95 @@ def get_report(db_path: str, month: str, platform: str = "cross",
         row = conn.execute(sql, params).fetchone()
         conn.close()
         return row["content"] if row else None
+
+
+@st.cache_data(ttl=300)
+def get_benchmark_stats(db_path: str = DEFAULT_DB,
+                        pages: list[str] | None = None) -> list[dict]:
+    """Haal geaggregeerde stats per page op voor benchmark-vergelijking.
+
+    Returns list of dicts met: page, platform, total_posts, total_likes,
+    total_comments, total_shares, total_engagement, avg_engagement_rate,
+    latest_followers.
+    """
+    sql = """SELECT page, platform,
+                COUNT(*) as total_posts,
+                SUM(likes) as total_likes,
+                SUM(comments) as total_comments,
+                SUM(shares) as total_shares,
+                SUM(engagement) as total_engagement,
+                ROUND(AVG(engagement_rate), 2) as avg_engagement_rate
+            FROM posts
+            WHERE 1=1"""
+    params = []
+    if pages:
+        placeholders = ",".join("?" for _ in pages)
+        sql += f" AND page IN ({placeholders})"
+        params.extend(pages)
+    sql += " GROUP BY page, platform ORDER BY page, platform"
+
+    if _USE_TURSO:
+        rows = _turso_execute(sql, params if params else None)
+        for row in rows:
+            for key in ("total_posts", "total_likes", "total_comments",
+                        "total_shares", "total_engagement"):
+                if key in row and row[key] is not None:
+                    try:
+                        row[key] = int(row[key])
+                    except (ValueError, TypeError):
+                        pass
+            if "avg_engagement_rate" in row and row["avg_engagement_rate"] is not None:
+                try:
+                    row["avg_engagement_rate"] = float(row["avg_engagement_rate"])
+                except (ValueError, TypeError):
+                    pass
+    else:
+        conn = _connect(db_path)
+        raw = conn.execute(sql, params).fetchall()
+        conn.close()
+        rows = [dict(r) for r in raw]
+
+    # Voeg laatste volgers-snapshot toe per page/platform
+    for row in rows:
+        page = row.get("page", "")
+        platform = row.get("platform", "")
+        now_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        fc = get_follower_count(db_path, platform, page, now_month)
+        row["latest_followers"] = fc
+
+    return rows
+
+
+@st.cache_data(ttl=300)
+def get_follower_history(db_path: str = DEFAULT_DB,
+                         pages: list[str] | None = None,
+                         platform: str | None = None) -> list[dict]:
+    """Haal volgers-historie op voor benchmark follower-groei chart.
+
+    Returns list of dicts met: platform, page, month, followers.
+    """
+    sql = "SELECT platform, page, month, followers FROM follower_snapshots WHERE 1=1"
+    params = []
+    if pages:
+        placeholders = ",".join("?" for _ in pages)
+        sql += f" AND page IN ({placeholders})"
+        params.extend(pages)
+    if platform:
+        sql += " AND platform = ?"
+        params.append(platform)
+    sql += " ORDER BY month ASC"
+
+    if _USE_TURSO:
+        rows = _turso_execute(sql, params if params else None)
+        for row in rows:
+            if "followers" in row and row["followers"] is not None:
+                try:
+                    row["followers"] = int(row["followers"])
+                except (ValueError, TypeError):
+                    pass
+        return rows
+    else:
+        conn = _connect(db_path)
+        raw = conn.execute(sql, params).fetchall()
+        conn.close()
+        return [dict(r) for r in raw]
