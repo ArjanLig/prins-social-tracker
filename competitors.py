@@ -65,12 +65,47 @@ FB_COMPETITORS = {
     },
 }
 
-# ── Instagram concurrenten ── (nog in te vullen door gebruiker)
+# ── Instagram concurrenten ──
 IG_COMPETITORS = {
-    "hills": {
-        "name": "Hill's Pet Nutrition",
-        "username": "hillspet",
-        "color": "#003DA5",
+    "edgardcooper": {
+        "name": "Edgard & Cooper",
+        "username": "edgardcooper",
+        "color": "#F4A460",
+    },
+    "justrussel": {
+        "name": "Just Russel",
+        "username": "justrussel.nl",
+        "color": "#FF6B35",
+    },
+    "royalcanin": {
+        "name": "Royal Canin",
+        "username": "royalcanin_nl",
+        "color": "#E2001A",
+    },
+    "butternutbox": {
+        "name": "Butternut Box",
+        "username": "butternutbox",
+        "color": "#F0C808",
+    },
+    "tasteofthewild": {
+        "name": "Taste of the Wild",
+        "username": "tasteofthewild",
+        "color": "#2E8B57",
+    },
+    "riverwood": {
+        "name": "Riverwood",
+        "username": "riverwood_petfood",
+        "color": "#4682B4",
+    },
+    "wooof": {
+        "name": "Wooof",
+        "username": "wooofnl",
+        "color": "#17A2B8",
+    },
+    "orijen": {
+        "name": "Orijen",
+        "username": "orijenpetfood",
+        "color": "#6B2D5B",
     },
 }
 
