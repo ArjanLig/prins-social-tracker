@@ -166,8 +166,77 @@ def scrape_ig_competitor(key: str) -> dict:
 
 
 def scrape_ig_all() -> dict:
-    """Scrape Instagram voor alle IG-concurrenten."""
-    return {key: scrape_ig_competitor(key) for key in IG_COMPETITORS}
+    """Scrape Instagram voor alle IG-concurrenten.
+
+    Met Apify: één batch-call voor alle profielen tegelijk.
+    Zonder Apify: per profiel apart (Playwright fallback).
+    """
+    if not _USE_APIFY:
+        return {key: scrape_ig_competitor(key) for key in IG_COMPETITORS}
+
+    from apify_instagram import apify_scrape_ig_profiles
+
+    # Eén batch Apify call voor alle concurrenten
+    username_to_key = {}
+    for key, comp in IG_COMPETITORS.items():
+        username_to_key[comp["username"].lower()] = key
+
+    usernames = [comp["username"] for comp in IG_COMPETITORS.values()]
+    print(f"\n[Apify batch] Instagram scraping voor {len(usernames)} concurrenten...")
+
+    try:
+        all_data = apify_scrape_ig_profiles(usernames, posts_per_profile=30)
+    except Exception as e:
+        print(f"  Apify batch fout: {e}")
+        return {key: {"posts": 0, "followers": None} for key in IG_COMPETITORS}
+
+    # Resultaten per concurrent verwerken
+    results = {}
+    for username_lower, data in all_data.items():
+        key = username_to_key.get(username_lower)
+        if not key:
+            continue
+
+        result = {"posts": 0, "followers": None}
+        profile = data.get("profile", {})
+        ig_posts = data.get("posts", [])
+
+        ig_followers = profile.get("followers", 0)
+        if ig_followers > 0:
+            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+            save_follower_snapshot(DEFAULT_DB, "instagram", key,
+                                   ig_followers, month=current_month)
+            result["followers"] = ig_followers
+
+        if ig_posts:
+            post_dicts = []
+            for p in ig_posts:
+                post_dicts.append({
+                    "id": p.get("shortcode", ""),
+                    "date": p.get("date", ""),
+                    "type": p.get("type", "Foto"),
+                    "text": (p.get("text") or "")[:200],
+                    "reach": 0,
+                    "views": p.get("views", 0) or 0,
+                    "likes": p.get("likes", 0) or 0,
+                    "comments": p.get("comments", 0) or 0,
+                    "shares": 0,
+                    "clicks": 0,
+                    "page": key,
+                    "source": p.get("source", "apify"),
+                })
+            result["posts"] = insert_posts(DEFAULT_DB, post_dicts, "instagram")
+
+        name = IG_COMPETITORS[key]["name"]
+        print(f"  {name}: {result['posts']} posts, volgers: {result.get('followers', '—')}")
+        results[key] = result
+
+    # Concurrenten zonder resultaten
+    for key in IG_COMPETITORS:
+        if key not in results:
+            results[key] = {"posts": 0, "followers": None}
+
+    return results
 
 
 # ── TikTok ────────────────────────────────────────────────────────────
