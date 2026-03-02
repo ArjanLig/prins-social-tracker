@@ -882,12 +882,17 @@ def show_channel_dashboard(platform: str, page: str):
     df_all["date_parsed"] = pd.to_datetime(df_all["date"], errors="coerce")
 
     now = datetime.now(timezone.utc)
+    cutoff_30d = now - pd.Timedelta(days=30)
+    cutoff_60d = now - pd.Timedelta(days=60)
     current_month = now.strftime("%Y-%m")
-    df_month = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") == current_month]
+    df_30d = df_all[df_all["date_parsed"] >= cutoff_30d]
+    df_prev_30d = df_all[(df_all["date_parsed"] >= cutoff_60d) & (df_all["date_parsed"] < cutoff_30d)]
 
-    # KPI cards — volgers uit database (al gesynchroniseerd door sync_follower_current)
-    current_month = now.strftime("%Y-%m")
+    # KPI cards — volgers uit database
     follower_count = get_follower_count(DEFAULT_DB, platform, page, current_month)
+    if not follower_count:
+        prev_month = (now.replace(day=1) - pd.Timedelta(days=1)).strftime("%Y-%m")
+        follower_count = get_follower_count(DEFAULT_DB, platform, page, prev_month)
 
     follower_delta = None
     if follower_count is not None:
@@ -899,80 +904,60 @@ def show_channel_dashboard(platform: str, page: str):
     if follower_count is not None:
         if follower_delta is not None:
             col1.metric("Volgers", f"{follower_count:,}",
-                         delta=f"{follower_delta:+,} deze maand")
+                         delta=f"{follower_delta:+,} vs. vorige maand")
         else:
             col1.metric("Volgers", f"{follower_count:,}")
     else:
         col1.metric("Volgers", "–")
-    posts_this_month = len(df_month)
-    df_prev_months = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") != current_month]
-    prev_monthly_counts = df_prev_months.groupby(df_prev_months["date_parsed"].dt.strftime("%Y-%m")).size()
+    posts_30d = len(df_30d)
+    posts_prev_30d = len(df_prev_30d)
     posts_delta_str = None
-    if len(prev_monthly_counts) > 0:
-        avg_posts = prev_monthly_counts.mean()
-        diff = posts_this_month - avg_posts
-        posts_delta_str = f"{diff:+.0f} vs. gem."
-    col2.metric("Posts deze maand", posts_this_month, delta=posts_delta_str)
-    impressions_per_post = df_month['impressions'].mean() if len(df_month) > 0 else 0
+    if posts_prev_30d > 0:
+        diff = posts_30d - posts_prev_30d
+        posts_delta_str = f"{diff:+.0f} vs. vorige 30d"
+    col2.metric("Posts (30 dagen)", posts_30d, delta=posts_delta_str)
+    impressions_per_post = df_30d['impressions'].mean() if len(df_30d) > 0 else 0
     impressions_delta_str = None
-    if len(df_prev_months) > 0:
-        prev_imp_per_post = df_prev_months.groupby(
-            df_prev_months["date_parsed"].dt.strftime("%Y-%m")
-        )['impressions'].mean()
-        if len(prev_imp_per_post) > 0:
-            avg_imp = prev_imp_per_post.mean()
-            diff = impressions_per_post - avg_imp
-            impressions_delta_str = f"{diff:+,.0f} vs. gem."
+    if len(df_prev_30d) > 0:
+        prev_imp = df_prev_30d['impressions'].mean()
+        diff = impressions_per_post - prev_imp
+        impressions_delta_str = f"{diff:+,.0f} vs. vorige 30d"
     col3.metric("Gem. weergaven/post",
                 f"{impressions_per_post:,.0f}" if pd.notna(impressions_per_post) else "0",
                 delta=impressions_delta_str)
     if platform == "tiktok":
-        total_shares = int(df_month['shares'].sum()) if len(df_month) > 0 else 0
+        total_shares = int(df_30d['shares'].sum()) if len(df_30d) > 0 else 0
         shares_delta_str = None
-        if len(df_prev_months) > 0:
-            prev_monthly_shares = df_prev_months.groupby(
-                df_prev_months["date_parsed"].dt.strftime("%Y-%m")
-            )['shares'].sum()
-            if len(prev_monthly_shares) > 0:
-                avg_shares = prev_monthly_shares.mean()
-                diff = total_shares - avg_shares
-                shares_delta_str = f"{diff:+,.0f} vs. gem."
-        col4.metric("Shares deze maand", f"{total_shares:,}", delta=shares_delta_str)
+        if len(df_prev_30d) > 0:
+            prev_shares = int(df_prev_30d['shares'].sum())
+            diff = total_shares - prev_shares
+            shares_delta_str = f"{diff:+,.0f} vs. vorige 30d"
+        col4.metric("Shares (30 dagen)", f"{total_shares:,}", delta=shares_delta_str)
     else:
-        reach_per_post = df_month['reach'].mean() if len(df_month) > 0 else 0
+        reach_per_post = df_30d['reach'].mean() if len(df_30d) > 0 else 0
         reach_delta_str = None
-        if len(df_prev_months) > 0:
-            prev_reach_per_post = df_prev_months.groupby(
-                df_prev_months["date_parsed"].dt.strftime("%Y-%m")
-            )['reach'].mean()
-            if len(prev_reach_per_post) > 0:
-                avg_reach = prev_reach_per_post.mean()
-                diff = reach_per_post - avg_reach
-                reach_delta_str = f"{diff:+,.0f} vs. gem."
+        if len(df_prev_30d) > 0:
+            prev_reach = df_prev_30d['reach'].mean()
+            diff = reach_per_post - prev_reach
+            reach_delta_str = f"{diff:+,.0f} vs. vorige 30d"
         col4.metric("Gem. bereik/post",
                     f"{reach_per_post:,.0f}" if pd.notna(reach_per_post) else "0",
                     delta=reach_delta_str)
 
-    # Engagement Rate deze maand vs. langlopend gemiddelde
+    # Engagement Rate laatste 30 dagen vs. vorige 30 dagen
     er_current = None
     er_avg = None
-    if len(df_month) > 0 and follower_count and follower_count > 0:
-        er_current = (df_month['engagement'].sum() / len(df_month)) / follower_count * 100
+    if len(df_30d) > 0 and follower_count and follower_count > 0:
+        er_current = (df_30d['engagement'].sum() / len(df_30d)) / follower_count * 100
 
-        df_prev = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") != current_month]
-        if len(df_prev) > 0:
-            prev_months = df_prev.groupby(df_prev["date_parsed"].dt.strftime("%Y-%m"))
-            monthly_ers = []
-            for _, grp in prev_months:
-                monthly_ers.append((grp['engagement'].sum() / len(grp)) / follower_count * 100)
-            if monthly_ers:
-                er_avg = sum(monthly_ers) / len(monthly_ers)
+        if len(df_prev_30d) > 0:
+            er_avg = (df_prev_30d['engagement'].sum() / len(df_prev_30d)) / follower_count * 100
 
     if er_current is not None:
         er_delta_str = None
         if er_avg is not None:
             diff = er_current - er_avg
-            er_delta_str = f"{diff:+.2f}% vs. gem."
+            er_delta_str = f"{diff:+.2f}% vs. vorige 30d"
         col5.metric("Engagement Rate", f"{er_current:.2f}%", delta=er_delta_str,
                     help="Engagement Rate = gemiddelde (likes + reacties + shares) per post, gedeeld door het aantal volgers × 100%.")
     else:
@@ -1171,15 +1156,15 @@ def show_dashboard(page: str | None = None):
     df_all = pd.DataFrame(all_posts)
     df_all["date_parsed"] = pd.to_datetime(df_all["date"], errors="coerce")
 
-    # KPI cards — current month
+    # KPI cards — laatste 30 dagen
     now = datetime.now(timezone.utc)
-    current_month = now.strftime("%Y-%m")
-    df_month = df_all[df_all["date_parsed"].dt.strftime("%Y-%m") == current_month]
+    cutoff_30d_cp = now - pd.Timedelta(days=30)
+    df_30d_cp = df_all[df_all["date_parsed"] >= cutoff_30d_cp]
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Posts deze maand", len(df_month))
-    col2.metric("Totaal engagement", f"{df_month['engagement'].sum():,}")
-    reach_val = df_month['reach'].mean() if len(df_month) > 0 else 0
+    col1.metric("Posts (30 dagen)", len(df_30d_cp))
+    col2.metric("Totaal engagement", f"{df_30d_cp['engagement'].sum():,}")
+    reach_val = df_30d_cp['reach'].mean() if len(df_30d_cp) > 0 else 0
     col3.metric("Gem. bereik", f"{reach_val:,.0f}" if pd.notna(reach_val) else "0")
     col4.metric("Totaal posts", len(df_all))
 
