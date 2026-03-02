@@ -1367,12 +1367,6 @@ def show_benchmark():
     st.header(":material/leaderboard: Concurrenten")
     st.caption("Vergelijk Prins met concurrenten — per kanaal")
 
-    # ── Clear caches voor verse data ──
-    get_benchmark_stats.clear()
-    get_monthly_stats.clear()
-    get_posts.clear()
-    get_follower_count.clear()
-
     # ── Tabs per platform ──
     tab_fb, tab_ig, tab_tk, tab_ai = st.tabs(
         ["Facebook", "Instagram", "TikTok", "AI Analyse"])
