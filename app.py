@@ -1,4 +1,4 @@
-# app.py  v2.1
+# app.py  v2.2
 """Prins Social Tracker — Streamlit Dashboard."""
 
 import os
