@@ -60,9 +60,14 @@ def scrape_ig_profile(username: str, max_posts: int = 25) -> dict:
                 pass
 
         # Scroll om meer posts te laden
-        for _ in range(5):
+        prev_height = 0
+        for _ in range(12):
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(2)
+            time.sleep(2.5)
+            new_height = page.evaluate("document.body.scrollHeight")
+            if new_height == prev_height:
+                break  # Geen nieuwe content meer
+            prev_height = new_height
 
         # Profiel info uit body tekst
         profile = {"followers": 0, "following": 0, "posts_count": 0}
