@@ -139,6 +139,34 @@ def _check_token(token: str) -> bool:
         return True
 
 
+@st.cache_data(ttl=86400)
+def _token_expiry_days(token: str) -> int | None:
+    """Return het aantal dagen tot een token verloopt, of None bij fout.
+
+    Returns 0 als het token al verlopen is, None als het niet verloopt
+    (permanent page token) of bij een fout.
+    """
+    if not token:
+        return None
+    try:
+        resp = requests.get(
+            f"{FB_BASE_URL}/debug_token",
+            params={"input_token": token, "access_token": token},
+            timeout=10,
+        )
+        data = resp.json().get("data", {})
+        if not data.get("is_valid", False):
+            return 0
+        expires_at = data.get("expires_at", 0)
+        if expires_at == 0:
+            return None  # Permanent token
+        expiry = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return max(0, (expiry - now).days)
+    except Exception:
+        return None
+
+
 def _exchange_for_long_lived(short_token: str) -> str | None:
     """Wissel een short-lived user token in voor een long-lived token."""
     if not META_APP_ID or not META_APP_SECRET:
@@ -246,17 +274,22 @@ def refresh_all_tokens(user_token: str) -> tuple[bool, str]:
 # ── Auto token refresh bij opstarten ──
 _prins_token = _get_secret("PRINS_TOKEN")
 _tokens_valid = _check_token(_prins_token) if _prins_token else False
+_user_token = _get_secret("USER_TOKEN")
 
-if not _tokens_valid:
-    # Probeer automatisch te vernieuwen via user token
-    _user_token = _get_secret("USER_TOKEN")
-    if _user_token and META_APP_ID and META_APP_SECRET:
-        _success, _msg = refresh_all_tokens(_user_token)
-        if _success:
-            # Herlaad de vernieuwde tokens uit .env
-            load_dotenv(override=True)
-            _prins_token = _get_secret("PRINS_TOKEN")
-            _tokens_valid = _check_token(_prins_token) if _prins_token else False
+# Bepaal of refresh nodig is: verlopen OF bijna verlopen (< 10 dagen)
+_refresh_needed = not _tokens_valid
+if not _refresh_needed and _user_token:
+    _days_left = _token_expiry_days(_user_token)
+    if _days_left is not None and _days_left < 10:
+        _refresh_needed = True
+
+if _refresh_needed and _user_token and META_APP_ID and META_APP_SECRET:
+    _success, _msg = refresh_all_tokens(_user_token)
+    if _success:
+        # Herlaad de vernieuwde tokens uit .env
+        load_dotenv(override=True)
+        _prins_token = _get_secret("PRINS_TOKEN")
+        _tokens_valid = _check_token(_prins_token) if _prins_token else False
 
 BRAND_CONFIG = {
     "prins": {
@@ -1459,7 +1492,14 @@ def main():
 
         # ── Token status ──
         if _tokens_valid:
-            st.success("API verbonden", icon=":material/check_circle:")
+            _days = _token_expiry_days(_user_token) if _user_token else None
+            if _days is not None and _days < 10:
+                st.warning(f"Token verloopt over {_days} dagen — wordt automatisch vernieuwd",
+                           icon=":material/schedule:")
+            elif _days is not None:
+                st.success(f"API verbonden ({_days}d geldig)", icon=":material/check_circle:")
+            else:
+                st.success("API verbonden", icon=":material/check_circle:")
         else:
             st.error("Token verlopen", icon=":material/error:")
             new_token = st.text_input(
