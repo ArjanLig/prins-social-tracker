@@ -1413,28 +1413,7 @@ def show_benchmark():
                 st.info(f"Nog geen {platform.capitalize()} concurrenten geconfigureerd.")
                 continue
 
-            # ── Per-platform sync knop ──
-            col_sync, col_count = st.columns([1, 3])
-            with col_sync:
-                if st.button(f":material/sync: Sync {platform.capitalize()}",
-                              key=f"btn_sync_{platform}",
-                              use_container_width=True):
-                    with st.spinner(f"{platform.capitalize()} concurrenten scrapen..."):
-                        from competitor_scraper import scrape_platform
-                        results = scrape_platform(platform)
-                        get_benchmark_stats.clear()
-                        get_monthly_stats.clear()
-                        get_posts.clear()
-                        get_follower_count.clear()
-                        summary_parts = []
-                        for key, res in results.items():
-                            name = get_competitor_name(key)
-                            summary_parts.append(
-                                f"{name}: {res.get('posts', 0)} posts")
-                        st.success("Sync voltooid: " + " | ".join(summary_parts))
-                        st.rerun()
-            with col_count:
-                st.caption(f"{len(comp_keys)} concurrenten geconfigureerd")
+            st.caption(f"{len(comp_keys)} concurrenten geconfigureerd")
 
             # ── KPI vergelijkingstabel (laatste 25 posts per merk) ──
             benchmark_data = get_benchmark_stats(pages=all_pages)
