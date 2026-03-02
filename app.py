@@ -1454,42 +1454,34 @@ def show_benchmark():
             prins_rows = [r for r in table_rows if r["_is_prins"]]
             comp_rows = [r for r in table_rows if not r["_is_prins"]]
 
-            _kpi_col_config = {
-                "Merk": st.column_config.TextColumn("Merk"),
-                "Volgers": st.column_config.NumberColumn(
-                    "Volgers", format=",d"),
-                "Posts": st.column_config.NumberColumn("Posts"),
-                "Likes": st.column_config.NumberColumn(
-                    "Likes", format=",d"),
-                "Reacties": st.column_config.NumberColumn(
-                    "Reacties", format=",d"),
-                "Shares": st.column_config.NumberColumn(
-                    "Shares", format=",d"),
-                "Engagement": st.column_config.NumberColumn(
-                    "Engagement", format=",d"),
-                "Gem. ER%": st.column_config.NumberColumn(
-                    "Gem. ER%", format=",.4f"),
+            _num_fmt = {
+                "Volgers": "{:,.0f}",
+                "Likes": "{:,.0f}",
+                "Reacties": "{:,.0f}",
+                "Shares": "{:,.0f}",
+                "Engagement": "{:,.0f}",
+                "Gem. ER%": "{:.4f}%",
             }
 
             # Prins rij — vast bovenaan, bold
             if prins_rows:
                 df_prins = pd.DataFrame(prins_rows).drop(columns=["_is_prins"])
                 st.dataframe(
-                    df_prins.style.apply(
-                        lambda _row: ["font-weight: bold"] * len(_row), axis=1),
+                    df_prins.style
+                        .format(_num_fmt)
+                        .apply(lambda _row: ["font-weight: bold"] * len(_row),
+                               axis=1),
                     use_container_width=True,
                     hide_index=True,
-                    column_config=_kpi_col_config,
                 )
 
             # Concurrenten — sorteerbaar via kolomkop
             if comp_rows:
                 df_comp = pd.DataFrame(comp_rows).drop(columns=["_is_prins"])
                 st.dataframe(
-                    df_comp,
+                    df_comp.style.format(_num_fmt),
                     use_container_width=True,
                     hide_index=True,
-                    column_config=_kpi_col_config,
                 )
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
