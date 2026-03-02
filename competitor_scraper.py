@@ -1,5 +1,5 @@
 # competitor_scraper.py
-"""Orchestratie van Facebook + TikTok scraping voor concurrenten."""
+"""Orchestratie van Facebook + TikTok + Instagram scraping voor concurrenten."""
 
 import os
 import sys
@@ -12,14 +12,14 @@ load_dotenv()
 from competitors import COMPETITORS
 from database import DEFAULT_DB, init_db, insert_posts, save_follower_snapshot
 from fb_scraper import scrape_fb_page_posts
+from ig_scraper import scrape_ig_profile
 from tiktok_api import tiktok_get_user_info, tiktok_get_videos
 
 
 def scrape_competitor(key: str) -> dict:
-    """Scrape Facebook + TikTok voor een enkele concurrent.
+    """Scrape Facebook + TikTok + Instagram voor een enkele concurrent.
 
-    Returns dict met resultaten: {"fb_posts": int, "tiktok_posts": int,
-                                   "fb_followers": int|None, "tiktok_followers": int|None}
+    Returns dict met resultaten per platform.
     """
     if key not in COMPETITORS:
         print(f"Onbekende concurrent: {key}")
@@ -28,8 +28,8 @@ def scrape_competitor(key: str) -> dict:
     comp = COMPETITORS[key]
     name = comp["name"]
     result = {
-        "fb_posts": 0, "tiktok_posts": 0,
-        "fb_followers": None, "tiktok_followers": None,
+        "fb_posts": 0, "tiktok_posts": 0, "ig_posts": 0,
+        "fb_followers": None, "tiktok_followers": None, "ig_followers": None,
     }
 
     # ── Facebook ──
@@ -41,7 +41,6 @@ def scrape_competitor(key: str) -> dict:
             page_info = fb_data.get("page_info", {})
             fb_posts = fb_data.get("posts", [])
 
-            # Volgers opslaan
             fb_followers = page_info.get("followers", 0)
             if fb_followers > 0:
                 current_month = datetime.now(timezone.utc).strftime("%Y-%m")
@@ -50,7 +49,6 @@ def scrape_competitor(key: str) -> dict:
                 result["fb_followers"] = fb_followers
                 print(f"  Volgers: {fb_followers:,}")
 
-            # Posts opslaan
             if fb_posts:
                 post_dicts = []
                 for p in fb_posts:
@@ -74,12 +72,51 @@ def scrape_competitor(key: str) -> dict:
         except Exception as e:
             print(f"  Facebook fout: {e}")
 
+    # ── Instagram ──
+    ig_user = comp.get("ig_username")
+    if ig_user:
+        print(f"\n[{name}] Instagram scraping (@{ig_user})...")
+        try:
+            ig_data = scrape_ig_profile(ig_user)
+            profile = ig_data.get("profile", {})
+            ig_posts = ig_data.get("posts", [])
+
+            ig_followers = profile.get("followers", 0)
+            if ig_followers > 0:
+                current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+                save_follower_snapshot(DEFAULT_DB, "instagram", key,
+                                       ig_followers, month=current_month)
+                result["ig_followers"] = ig_followers
+                print(f"  Volgers: {ig_followers:,}")
+
+            if ig_posts:
+                post_dicts = []
+                for p in ig_posts:
+                    post_dicts.append({
+                        "id": p.get("shortcode", ""),
+                        "date": p.get("date", ""),
+                        "type": p.get("type", "Foto"),
+                        "text": (p.get("text") or "")[:200],
+                        "reach": 0,
+                        "views": p.get("views", 0) or 0,
+                        "likes": p.get("likes", 0) or 0,
+                        "comments": p.get("comments", 0) or 0,
+                        "shares": 0,
+                        "clicks": 0,
+                        "page": key,
+                        "source": "scraper",
+                    })
+                inserted = insert_posts(DEFAULT_DB, post_dicts, "instagram")
+                result["ig_posts"] = inserted
+                print(f"  {inserted} posts opgeslagen (van {len(ig_posts)} gevonden)")
+        except Exception as e:
+            print(f"  Instagram fout: {e}")
+
     # ── TikTok ──
     tiktok_user = comp.get("tiktok_username")
     if tiktok_user:
         print(f"\n[{name}] TikTok scraping (@{tiktok_user})...")
         try:
-            # Profiel info (volgers)
             user_info = tiktok_get_user_info(tiktok_user)
             if user_info and "follower_count" in user_info:
                 count = user_info["follower_count"]
@@ -89,7 +126,6 @@ def scrape_competitor(key: str) -> dict:
                 result["tiktok_followers"] = count
                 print(f"  Volgers: {count:,}")
 
-            # Video's
             videos = tiktok_get_videos(tiktok_user, page=key)
             if videos:
                 inserted = insert_posts(DEFAULT_DB, videos, "tiktok")
@@ -112,7 +148,6 @@ def scrape_all_competitors() -> dict[str, dict]:
 if __name__ == "__main__":
     init_db()
 
-    # CLI: optioneel een specifieke concurrent meegeven
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
         if target in COMPETITORS:
@@ -127,4 +162,4 @@ if __name__ == "__main__":
         print("\n=== Samenvatting ===")
         for key, res in results.items():
             name = COMPETITORS[key]["name"]
-            print(f"{name}: FB {res['fb_posts']} posts, TikTok {res['tiktok_posts']} posts")
+            print(f"{name}: FB {res['fb_posts']}, IG {res['ig_posts']}, TikTok {res['tiktok_posts']}")

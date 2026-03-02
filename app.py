@@ -1407,9 +1407,14 @@ def show_benchmark():
         from competitor_scraper import scrape_competitor
         stale_competitors = []
         for comp_key in COMPETITORS:
-            posts = get_posts(platform="facebook", page=comp_key)
-            recent = [p for p in posts if (p.get("date") or "") >= _cutoff]
-            if not recent:
+            has_recent = False
+            for plat in ["facebook", "instagram", "tiktok"]:
+                posts = get_posts(platform=plat, page=comp_key)
+                recent = [p for p in posts if (p.get("date") or "") >= _cutoff]
+                if recent:
+                    has_recent = True
+                    break
+            if not has_recent:
                 stale_competitors.append(comp_key)
 
         if stale_competitors:
@@ -1430,9 +1435,10 @@ def show_benchmark():
         return
 
     # ── Tabs per platform ──
-    tab_fb, tab_tk, tab_ai = st.tabs(["Facebook", "TikTok", "AI Analyse"])
+    tab_fb, tab_ig, tab_tk, tab_ai = st.tabs(
+        ["Facebook", "Instagram", "TikTok", "AI Analyse"])
 
-    for tab, platform in [(tab_fb, "facebook"), (tab_tk, "tiktok")]:
+    for tab, platform in [(tab_fb, "facebook"), (tab_ig, "instagram"), (tab_tk, "tiktok")]:
         with tab:
             platform_data = [r for r in benchmark_data if r.get("platform") == platform]
             if not platform_data:
