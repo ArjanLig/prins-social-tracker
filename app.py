@@ -1457,18 +1457,18 @@ def show_benchmark():
             _kpi_col_config = {
                 "Merk": st.column_config.TextColumn("Merk"),
                 "Volgers": st.column_config.NumberColumn(
-                    "Volgers", format="%d"),
+                    "Volgers", format=",d"),
                 "Posts": st.column_config.NumberColumn("Posts"),
                 "Likes": st.column_config.NumberColumn(
-                    "Likes", format="%d"),
+                    "Likes", format=",d"),
                 "Reacties": st.column_config.NumberColumn(
-                    "Reacties", format="%d"),
+                    "Reacties", format=",d"),
                 "Shares": st.column_config.NumberColumn(
-                    "Shares", format="%d"),
+                    "Shares", format=",d"),
                 "Engagement": st.column_config.NumberColumn(
-                    "Engagement", format="%d"),
+                    "Engagement", format=",d"),
                 "Gem. ER%": st.column_config.NumberColumn(
-                    "Gem. ER%", format="%.4f %%"),
+                    "Gem. ER%", format=",.4f"),
             }
 
             # Prins rij — vast bovenaan, bold
