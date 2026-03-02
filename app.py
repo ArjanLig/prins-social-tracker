@@ -14,10 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from csv_import import detect_platform, parse_csv_file
-from tiktok_api import (
-    tiktok_get_user_info,
-    tiktok_get_videos,
-)
 from database import (
     DEFAULT_DB,
     add_remark,
@@ -131,13 +127,24 @@ def _save_db_setting(key: str, value: str):
         pass
 
 
-_init_turso_settings()
+@st.cache_resource(ttl=3600)
+def _ensure_turso_settings():
+    """Maak app_settings tabel aan (cached, max 1x per uur)."""
+    _init_turso_settings()
+    return True
+
+_ensure_turso_settings()
+
+
+@st.cache_data(ttl=300)
+def _get_secret_cached(key: str) -> str:
+    """Haal waarde op uit Turso DB (cached 5 min)."""
+    return _get_db_setting(key) or ""
 
 
 def _get_secret(key: str, default: str = "") -> str:
-    """Haal waarde op: Turso DB → st.secrets → os.getenv."""
-    # Check Turso DB eerst (bevat vernieuwde tokens)
-    db_val = _get_db_setting(key)
+    """Haal waarde op: Turso DB (cached) → st.secrets → os.getenv."""
+    db_val = _get_secret_cached(key)
     if db_val:
         return db_val
     try:
@@ -624,6 +631,7 @@ def sync_posts_from_api(brand: str) -> dict:
 @st.cache_data(ttl=900)
 def sync_tiktok_followers(brand: str) -> int | None:
     """Sync TikTok volgers voor een merk via scraper (gecached 15 min)."""
+    from tiktok_api import tiktok_get_user_info
     user_info = tiktok_get_user_info(TIKTOK_USERNAME)
     if user_info and "follower_count" in user_info:
         count = user_info["follower_count"]
@@ -636,6 +644,7 @@ def sync_tiktok_followers(brand: str) -> int | None:
 @st.cache_data(ttl=900)
 def sync_tiktok_videos(brand: str) -> int:
     """Sync recente TikTok video's via scraper (gecached 15 min)."""
+    from tiktok_api import tiktok_get_videos
     videos = tiktok_get_videos(TIKTOK_USERNAME)
     if videos:
         return insert_posts(DEFAULT_DB, videos, "tiktok")
@@ -694,7 +703,7 @@ def show_posts_table(platform: str, page: str):
                         "engagement_rate", "theme", "campaign"]
     elif platform == "instagram":
         display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "impressions", "likes",
-                        "comments", "shares", "engagement",
+                        "comments", "engagement",
                         "engagement_rate", "theme", "campaign"]
     else:
         display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "impressions", "likes",
