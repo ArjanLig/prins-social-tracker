@@ -1440,6 +1440,7 @@ def show_benchmark():
                 else:
                     avg_er = 0
                 table_rows.append({
+                    "_is_prins": page_key == "prins",
                     "Merk": display_name,
                     "Volgers": f"{followers:,}" if followers else "—",
                     "Posts": len(recent_25),
@@ -1449,8 +1450,16 @@ def show_benchmark():
                     "Engagement": f"{total_engagement:,}",
                     "Gem. ER%": f"{avg_er:.4f}%",
                 })
-            st.dataframe(pd.DataFrame(table_rows), use_container_width=True,
-                         hide_index=True)
+            # Prins altijd bovenaan
+            table_rows.sort(key=lambda r: (0 if r["_is_prins"] else 1))
+            df_kpi = pd.DataFrame(table_rows).drop(columns=["_is_prins"])
+
+            def _bold_prins(row):
+                is_prins = row.name == 0  # Prins staat altijd op index 0
+                return ["font-weight: bold" if is_prins else "" for _ in row]
+
+            st.dataframe(df_kpi.style.apply(_bold_prins, axis=1),
+                         use_container_width=True, hide_index=True)
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
@@ -1471,7 +1480,11 @@ def show_benchmark():
                 for m in competitor_monthly:
                     p = m.get("page", "")
                     pages_monthly.setdefault(p, []).append(m)
-                for page_key, entries in sorted(pages_monthly.items()):
+                # Prins altijd als eerste trace in chart
+                sorted_keys = sorted(pages_monthly.keys(),
+                                     key=lambda k: (0 if k == "prins" else 1, k))
+                for page_key in sorted_keys:
+                    entries = pages_monthly[page_key]
                     entries.sort(key=lambda x: x.get("month", ""))
                     months = [e.get("month", "") for e in entries]
                     engagement = [e.get("total_engagement", 0) for e in entries]
