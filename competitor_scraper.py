@@ -37,7 +37,7 @@ def scrape_competitor(key: str) -> dict:
     if fb_slug:
         print(f"\n[{name}] Facebook scraping ({fb_slug})...")
         try:
-            fb_data = scrape_fb_page_posts(fb_slug, max_posts=25, max_scrolls=10)
+            fb_data = scrape_fb_page_posts(fb_slug, max_posts=50, max_scrolls=15)
             page_info = fb_data.get("page_info", {})
             fb_posts = fb_data.get("posts", [])
 

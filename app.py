@@ -1386,8 +1386,12 @@ def show_benchmark():
     with col_info:
         st.caption("Instagram is niet beschikbaar voor concurrenten (coming soon)")
 
-    # ── Data ophalen ──
+    # ── Data ophalen (clear caches voor verse data) ──
     all_pages = ["prins"] + list(COMPETITORS.keys())
+    get_benchmark_stats.clear()
+    get_monthly_stats.clear()
+    get_posts.clear()
+    get_follower_count.clear()
     benchmark_data = get_benchmark_stats(pages=all_pages)
 
     if not benchmark_data:
@@ -1404,8 +1408,10 @@ def show_benchmark():
                 st.info(f"Geen {platform.capitalize()} data beschikbaar.")
                 continue
 
-            # ── KPI vergelijkingstabel ──
+            # ── KPI vergelijkingstabel (laatste 25 posts per merk) ──
             st.subheader("KPI Vergelijking")
+            st.caption("Op basis van de laatste 25 posts per merk")
+            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
             table_rows = []
             for row in platform_data:
                 page_key = row.get("page", "")
@@ -1415,28 +1421,44 @@ def show_benchmark():
                     display_name = COMPETITORS[page_key]["name"]
                 else:
                     display_name = page_key.capitalize()
-                followers = row.get("latest_followers")
+                # Haal laatste 25 posts op voor eerlijke vergelijking
+                all_page_posts = get_posts(platform=platform, page=page_key)
+                recent_25 = sorted(all_page_posts,
+                                   key=lambda p: p.get("date", ""),
+                                   reverse=True)[:25]
+                total_likes = sum(p.get("likes", 0) or 0 for p in recent_25)
+                total_comments = sum(p.get("comments", 0) or 0 for p in recent_25)
+                total_shares = sum(p.get("shares", 0) or 0 for p in recent_25)
+                total_engagement = total_likes + total_comments + total_shares
+                # Haal volgers direct op (niet via gecachte benchmark_stats)
+                followers = get_follower_count(DEFAULT_DB, platform,
+                                               page_key, current_month)
+                # Bereken ER live op basis van huidige volgers
+                if followers and followers > 0 and recent_25:
+                    avg_er = (total_engagement / len(recent_25)) / followers * 100
+                else:
+                    avg_er = 0
                 table_rows.append({
                     "Merk": display_name,
                     "Volgers": f"{followers:,}" if followers else "—",
-                    "Posts": row.get("total_posts", 0),
-                    "Likes": f"{row.get('total_likes', 0):,}",
-                    "Reacties": f"{row.get('total_comments', 0):,}",
-                    "Shares": f"{row.get('total_shares', 0):,}",
-                    "Engagement": f"{row.get('total_engagement', 0):,}",
-                    "Gem. ER%": f"{row.get('avg_engagement_rate', 0):.2f}%",
+                    "Posts": len(recent_25),
+                    "Likes": f"{total_likes:,}",
+                    "Reacties": f"{total_comments:,}",
+                    "Shares": f"{total_shares:,}",
+                    "Engagement": f"{total_engagement:,}",
+                    "Gem. ER%": f"{avg_er:.4f}%",
                 })
             st.dataframe(pd.DataFrame(table_rows), use_container_width=True,
                          hide_index=True)
 
-            # ── Engagement vergelijking (maandelijks, laatste 6 maanden) ──
+            # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
             all_months_set = sorted({m.get("month", "") for m in monthly_stats
-                                     if m.get("page") in all_pages and m.get("month")})
-            recent_months = all_months_set[-6:] if len(all_months_set) > 6 else all_months_set
+                                     if m.get("month")})
+            recent_6 = set(all_months_set[-6:]) if len(all_months_set) > 6 else set(all_months_set)
             competitor_monthly = [m for m in monthly_stats
                                   if m.get("page") in all_pages
-                                  and m.get("month") in recent_months]
+                                  and m.get("month") in recent_6]
             if competitor_monthly:
                 st.subheader("Maandelijkse engagement")
                 fig_eng = go.Figure()
@@ -1467,8 +1489,21 @@ def show_benchmark():
                 )
                 st.plotly_chart(fig_eng, use_container_width=True)
 
-            # ── Top posts per concurrent ──
+            # ── Top posts per concurrent (laatste 6 maanden) ──
             st.subheader("Top posts per merk")
+            st.caption("Laatste 6 maanden, gesorteerd op engagement")
+            six_months_ago = (datetime.now(timezone.utc)
+                              .replace(day=1)
+                              .strftime("%Y-%m"))
+            # Bereken 6 maanden terug
+            now = datetime.now(timezone.utc)
+            m6 = now.month - 6
+            y6 = now.year
+            if m6 <= 0:
+                m6 += 12
+                y6 -= 1
+            cutoff = f"{y6}-{m6:02d}"
+
             for page_key in all_pages:
                 if page_key == "prins":
                     display_name = "Prins"
@@ -1479,21 +1514,36 @@ def show_benchmark():
                 posts = get_posts(platform=platform, page=page_key)
                 if not posts:
                     continue
-                top_posts = sorted(posts,
+                # Filter laatste 6 maanden
+                recent_posts = [p for p in posts
+                                if (p.get("date") or "") >= cutoff]
+                if not recent_posts:
+                    recent_posts = posts  # Fallback: toon alles als geen recente
+                top_posts = sorted(recent_posts,
                                    key=lambda p: (p.get("likes", 0) or 0)
                                    + (p.get("comments", 0) or 0),
                                    reverse=True)[:5]
                 with st.expander(f"{display_name} — top 5"):
                     for i, p in enumerate(top_posts, 1):
                         date = (p.get("date") or "")[:10]
-                        text = (p.get("text") or "(geen tekst)")[:120]
+                        text = (p.get("text") or "(geen tekst)").replace("\n", "  \n")
                         likes = p.get("likes", 0) or 0
                         comments = p.get("comments", 0) or 0
                         shares = p.get("shares", 0) or 0
-                        st.markdown(
-                            f"**{i}.** [{date}] {likes} likes, "
-                            f"{comments} reacties, {shares} shares\n\n"
-                            f"> {text}")
+                        post_id = p.get("post_id") or p.get("id") or ""
+                        # Bouw link naar post
+                        if post_id and platform == "facebook":
+                            link = f"https://www.facebook.com/{post_id}"
+                        elif post_id and platform == "tiktok":
+                            link = f"https://www.tiktok.com/@{page_key}/video/{post_id}"
+                        else:
+                            link = ""
+                        header = (f"**{i}.** [{date}] "
+                                  f"{likes} likes, {comments} reacties, "
+                                  f"{shares} shares")
+                        if link:
+                            header += f"  \n:material/open_in_new: [Bekijk post]({link})"
+                        st.markdown(f"{header}\n\n> {text}")
 
     with tab_ai:
         st.subheader("AI Benchmark Analyse")
