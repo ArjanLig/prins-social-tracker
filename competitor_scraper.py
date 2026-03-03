@@ -6,7 +6,7 @@ Per-kanaal configuratie: verschillende concurrenten per platform.
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -19,6 +19,25 @@ from competitors import (
     get_competitor_name,
 )
 from database import DEFAULT_DB, init_db, insert_posts, save_follower_snapshot
+
+CUTOFF_MONTHS = 6
+
+
+def _cutoff_date() -> str:
+    """Return cutoff datum als YYYY-MM-DD string (6 maanden geleden)."""
+    return (datetime.now(timezone.utc) - timedelta(days=CUTOFF_MONTHS * 30)).strftime("%Y-%m-%d")
+
+
+def _filter_recent_posts(posts: list[dict], label: str = "") -> list[dict]:
+    """Filter posts ouder dan de cutoff datum. Logt hoeveel er gefilterd worden."""
+    cutoff = _cutoff_date()
+    recent = [p for p in posts if p.get("date", "")[:10] >= cutoff]
+    skipped = len(posts) - len(recent)
+    if skipped > 0:
+        print(f"  {label}{skipped} posts ouder dan {cutoff} overgeslagen" if label
+              else f"  {skipped} posts ouder dan {cutoff} overgeslagen")
+    return recent
+
 
 # Apify als primaire bron voor IG + TikTok; fallback naar lokale scrapers
 _USE_APIFY = bool(os.environ.get("APIFY_API_TOKEN"))
@@ -61,7 +80,7 @@ def scrape_fb_competitor(key: str) -> dict:
     print(f"\n[{name}] Facebook scraping ({slug})...")
     try:
         scrape_fb_page_posts = _import_fb_scraper()
-        fb_data = scrape_fb_page_posts(slug, max_posts=50, max_scrolls=15)
+        fb_data = scrape_fb_page_posts(slug, max_posts=300, max_scrolls=40)
         page_info = fb_data.get("page_info", {})
         fb_posts = fb_data.get("posts", [])
 
@@ -90,6 +109,7 @@ def scrape_fb_competitor(key: str) -> dict:
                     "page": key,
                     "source": "scraper",
                 })
+            post_dicts = _filter_recent_posts(post_dicts, f"[{name}] FB: ")
             inserted = insert_posts(DEFAULT_DB, post_dicts, "facebook")
             result["posts"] = inserted
             print(f"  {inserted} posts opgeslagen (van {len(fb_posts)} gevonden)")
@@ -157,6 +177,7 @@ def scrape_ig_competitor(key: str) -> dict:
                     "page": key,
                     "source": p.get("source", "scraper"),
                 })
+            post_dicts = _filter_recent_posts(post_dicts, f"[{name}] IG: ")
             inserted = insert_posts(DEFAULT_DB, post_dicts, "instagram")
             result["posts"] = inserted
             print(f"  {inserted} posts opgeslagen (van {len(ig_posts)} gevonden)")
@@ -186,7 +207,7 @@ def scrape_ig_all() -> dict:
     print(f"\n[Apify batch] Instagram scraping voor {len(usernames)} concurrenten...")
 
     try:
-        all_data = apify_scrape_ig_profiles(usernames, posts_per_profile=30)
+        all_data = apify_scrape_ig_profiles(usernames, posts_per_profile=300)
     except Exception as e:
         print(f"  Apify batch fout: {e}")
         return {key: {"posts": 0, "followers": None} for key in IG_COMPETITORS}
@@ -226,6 +247,7 @@ def scrape_ig_all() -> dict:
                     "page": key,
                     "source": p.get("source", "apify"),
                 })
+            post_dicts = _filter_recent_posts(post_dicts, f"[{IG_COMPETITORS[key]['name']}] IG: ")
             result["posts"] = insert_posts(DEFAULT_DB, post_dicts, "instagram")
 
         name = IG_COMPETITORS[key]["name"]
@@ -277,6 +299,7 @@ def scrape_tk_competitor(key: str) -> dict:
                 # Zorg dat page correct is (key, niet username)
                 for p in tk_posts:
                     p["page"] = key
+                tk_posts = _filter_recent_posts(tk_posts, f"[{name}] TK: ")
                 inserted = insert_posts(DEFAULT_DB, tk_posts, "tiktok")
                 result["posts"] = inserted
                 print(f"  {inserted} video's opgeslagen (van {len(tk_posts)} gevonden)")
@@ -293,6 +316,7 @@ def scrape_tk_competitor(key: str) -> dict:
 
             videos = tiktok_get_videos(username, page=key)
             if videos:
+                videos = _filter_recent_posts(videos, f"[{name}] TK: ")
                 inserted = insert_posts(DEFAULT_DB, videos, "tiktok")
                 result["posts"] = inserted
                 print(f"  {inserted} video's opgeslagen (van {len(videos)} gevonden)")
@@ -320,7 +344,7 @@ def scrape_tk_all() -> dict:
     print(f"\n[Apify batch] TikTok scraping voor {len(usernames)} concurrenten...")
 
     try:
-        all_data = apify_scrape_tk_profiles(usernames, videos_per_profile=20)
+        all_data = apify_scrape_tk_profiles(usernames, videos_per_profile=300)
     except Exception as e:
         print(f"  Apify TikTok batch fout: {e}")
         return {key: {"posts": 0, "followers": None} for key in TK_COMPETITORS}
@@ -345,6 +369,7 @@ def scrape_tk_all() -> dict:
         if tk_posts:
             for p in tk_posts:
                 p["page"] = key
+            tk_posts = _filter_recent_posts(tk_posts, f"[{TK_COMPETITORS[key]['name']}] TK: ")
             result["posts"] = insert_posts(DEFAULT_DB, tk_posts, "tiktok")
 
         name = TK_COMPETITORS[key]["name"]

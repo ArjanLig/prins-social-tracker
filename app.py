@@ -1421,7 +1421,7 @@ def show_benchmark():
 
             st.caption(f"{len(comp_keys)} concurrenten geconfigureerd")
 
-            # ── KPI vergelijkingstabel (laatste 25 posts per merk) ──
+            # ── KPI vergelijkingstabel (laatste 6 maanden per merk) ──
             benchmark_data = get_benchmark_stats(pages=all_pages)
             platform_data = [r for r in benchmark_data
                              if r.get("platform") == platform]
@@ -1430,31 +1430,33 @@ def show_benchmark():
                 st.info(f"Geen {platform.capitalize()} data. Klik sync om te starten.")
                 continue
 
+            from datetime import timedelta
+            _cutoff = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
+
             st.subheader("KPI Vergelijking")
-            st.caption("Op basis van de laatste 25 posts per merk")
+            st.caption(f"Op basis van alle posts sinds {_cutoff}")
             all_platform_posts = _cached_get_all_platform_posts(platform)
             table_rows = []
             for row in platform_data:
                 page_key = row.get("page", "")
                 display_name = get_competitor_name(page_key)
                 all_page_posts = all_platform_posts.get(page_key, [])
-                recent_25 = sorted(all_page_posts,
-                                   key=lambda p: p.get("date", ""),
-                                   reverse=True)[:25]
-                total_likes = sum(p.get("likes", 0) or 0 for p in recent_25)
-                total_comments = sum(p.get("comments", 0) or 0 for p in recent_25)
-                total_shares = sum(p.get("shares", 0) or 0 for p in recent_25)
+                recent_posts = [p for p in all_page_posts
+                                if p.get("date", "")[:10] >= _cutoff]
+                total_likes = sum(p.get("likes", 0) or 0 for p in recent_posts)
+                total_comments = sum(p.get("comments", 0) or 0 for p in recent_posts)
+                total_shares = sum(p.get("shares", 0) or 0 for p in recent_posts)
                 total_engagement = total_likes + total_comments + total_shares
                 followers = row.get("latest_followers") or 0
-                if followers and followers > 0 and recent_25:
-                    avg_er = (total_engagement / len(recent_25)) / followers * 100
+                if followers and followers > 0 and recent_posts:
+                    avg_er = (total_engagement / len(recent_posts)) / followers * 100
                 else:
                     avg_er = 0
                 table_rows.append({
                     "_is_prins": page_key == "prins",
                     "Merk": display_name,
                     "Volgers": followers or 0,
-                    "Posts": len(recent_25),
+                    "Posts": len(recent_posts),
                     "Likes": total_likes,
                     "Reacties": total_comments,
                     "Shares": total_shares,
