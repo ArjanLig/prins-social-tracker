@@ -175,3 +175,27 @@ def get_competitor_name(key: str) -> str:
         return "Edupet"
     comp = ALL_COMPETITORS.get(key)
     return comp["name"] if comp else key.capitalize()
+
+
+def get_competitor_url(key: str, platform: str) -> str | None:
+    """Return social media profiel-URL voor een competitor op een platform."""
+    if platform == "facebook":
+        if key == "prins":
+            return "https://www.facebook.com/PrinsPetfoods"
+        if key == "edupet":
+            return "https://www.facebook.com/edupet.nl"
+        comp = FB_COMPETITORS.get(key)
+        return f"https://www.facebook.com/{comp['slug']}" if comp else None
+    elif platform == "instagram":
+        if key == "prins":
+            return "https://www.instagram.com/prinspetfoods/"
+        if key == "edupet":
+            return "https://www.instagram.com/edupet.nl/"
+        comp = IG_COMPETITORS.get(key)
+        return f"https://www.instagram.com/{comp['username']}/" if comp else None
+    elif platform == "tiktok":
+        if key == "prins":
+            return "https://www.tiktok.com/@prinspetfoods"
+        comp = TK_COMPETITORS.get(key)
+        return f"https://www.tiktok.com/@{comp['username']}" if comp else None
+    return None

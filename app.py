@@ -38,6 +38,7 @@ from competitors import (
     ALL_BRAND_COLORS,
     get_competitor_keys,
     get_competitor_name,
+    get_competitor_url,
 )
 
 
@@ -1440,6 +1441,7 @@ def show_benchmark():
             for row in platform_data:
                 page_key = row.get("page", "")
                 display_name = get_competitor_name(page_key)
+                profile_url = get_competitor_url(page_key, platform)
                 all_page_posts = all_platform_posts.get(page_key, [])
                 recent_posts = [p for p in all_page_posts
                                 if p.get("date", "")[:10] >= _cutoff]
@@ -1455,6 +1457,7 @@ def show_benchmark():
                 table_rows.append({
                     "_is_prins": page_key == "prins",
                     "Merk": display_name,
+                    "Profiel": profile_url or "",
                     "Volgers": followers or 0,
                     "Posts": len(recent_posts),
                     "Likes": total_likes,
@@ -1475,6 +1478,11 @@ def show_benchmark():
                 "Engagement": "{:,.0f}",
                 "Gem. ER%": "{:.4f}%",
             }
+            _link_col_config = {
+                "Profiel": st.column_config.LinkColumn(
+                    "Profiel", display_text="Open", width="small",
+                ),
+            }
 
             # Prins rij — vast bovenaan, bold
             if prins_rows:
@@ -1484,6 +1492,7 @@ def show_benchmark():
                         .format(_num_fmt)
                         .apply(lambda _row: ["font-weight: bold"] * len(_row),
                                axis=1),
+                    column_config=_link_col_config,
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -1493,6 +1502,7 @@ def show_benchmark():
                 df_comp = pd.DataFrame(comp_rows).drop(columns=["_is_prins"])
                 st.dataframe(
                     df_comp.style.format(_num_fmt),
+                    column_config=_link_col_config,
                     use_container_width=True,
                     hide_index=True,
                 )
