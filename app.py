@@ -3,6 +3,7 @@
 
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -19,6 +20,7 @@ from database import (
     add_remark,
     get_benchmark_stats,
     get_follower_count,
+    get_follower_counts_batch,
     get_follower_previous_month,
     get_monthly_stats,
     get_posts,
@@ -584,9 +586,9 @@ def sync_posts_from_api(brand: str) -> dict:
                 timeout=10,
             )
             resp.raise_for_status()
-            ig_posts = []
-            for post in resp.json().get("data", []):
-                # Fetch insights per post for reach & impressions
+            ig_data = resp.json().get("data", [])
+
+            def _fetch_ig_insights(post):
                 post_reach = 0
                 post_impressions = 0
                 post_id = post.get("id")
@@ -609,7 +611,7 @@ def sync_posts_from_api(brand: str) -> dict:
                                 post_impressions = val
                     except Exception:
                         pass
-                ig_posts.append({
+                return {
                     "date": post.get("timestamp", "").replace("+0000", ""),
                     "type": post.get("media_type", "Post"),
                     "text": (post.get("caption") or "")[:200],
@@ -621,7 +623,10 @@ def sync_posts_from_api(brand: str) -> dict:
                     "clicks": 0,
                     "page": brand,
                     "source": "api",
-                })
+                }
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                ig_posts = list(executor.map(_fetch_ig_insights, ig_data))
             if ig_posts:
                 result["instagram"] = insert_posts(DEFAULT_DB, ig_posts, "instagram")
     except Exception:
@@ -653,6 +658,33 @@ def sync_tiktok_videos(brand: str) -> int:
     return 0
 
 
+def _sync_sidebar(platform: str, page: str):
+    """Toon sync knop + status in de sidebar."""
+    cache_key = f"_last_sync_{page}_{platform}"
+    last_sync = st.session_state.get(cache_key)
+
+    with st.sidebar:
+        if st.button(":material/sync: Synchroniseren", key=f"sync_{page}_{platform}",
+                      use_container_width=True):
+            with st.spinner("Synchroniseren..."):
+                if platform == "tiktok":
+                    sync_tiktok_followers(page)
+                    sync_tiktok_videos(page)
+                else:
+                    sync_posts_from_api(page)
+                    sync_follower_current(page)
+                _cached_get_posts.clear()
+                st.session_state[cache_key] = datetime.now(timezone.utc)
+            st.rerun()
+        if last_sync:
+            minutes_ago = (datetime.now(timezone.utc) - last_sync).total_seconds() / 60
+            if minutes_ago < 1:
+                st.caption(":material/check_circle: Zojuist gesynct")
+            elif minutes_ago < 60:
+                st.caption(f":material/schedule: {int(minutes_ago)} min geleden")
+            else:
+                st.caption(f":material/schedule: {int(minutes_ago / 60)}u geleden")
+
 
 MAAND_NL = {
     1: "Januari", 2: "Februari", 3: "Maart", 4: "April",
@@ -683,10 +715,11 @@ def check_password_DISABLED() -> bool:
     return False
 
 
-def show_posts_table(platform: str, page: str):
+def show_posts_table(platform: str, page: str, posts: list | None = None):
     """Render an editable posts table grouped by year > month in expanders."""
     key_prefix = f"{page}_{platform}"
-    posts = get_posts(platform=platform, page=page)
+    if posts is None:
+        posts = _cached_get_posts(platform, page)
     if not posts:
         st.info(f"Nog geen {platform} posts. Upload een CSV via 'CSV Upload'.")
         return
@@ -791,26 +824,6 @@ def show_posts_table(platform: str, page: str):
                         st.success("Labels opgeslagen!")
 
 
-def show_brand_page(page: str):
-    """Show Facebook + Instagram with separate dashboards per channel."""
-    label = page.capitalize()
-    st.header(label)
-    st.caption("Facebook & Instagram overzicht")
-
-    tab_fb, tab_ig = st.tabs([":material/public: Facebook", ":material/photo_camera: Instagram"])
-
-    with tab_fb:
-        st.subheader(f"{label} — Facebook")
-        show_channel_dashboard("facebook", page)
-        st.subheader("Posts")
-        show_posts_table("facebook", page)
-
-    with tab_ig:
-        st.subheader(f"{label} — Instagram")
-        show_channel_dashboard("instagram", page)
-        st.subheader("Posts")
-        show_posts_table("instagram", page)
-
 
 def show_upload_tab():
     """CSV Upload tab."""
@@ -870,10 +883,11 @@ def show_upload_tab():
         )
 
 
-def show_channel_dashboard(platform: str, page: str):
+def show_channel_dashboard(platform: str, page: str, posts: list | None = None):
     """Dashboard for a specific platform + page (e.g. Prins Facebook)."""
     label = f"{page.capitalize()} {platform.capitalize()}"
-    posts = get_posts(platform=platform, page=page)
+    if posts is None:
+        posts = _cached_get_posts(platform, page)
 
     if not posts:
         st.info(f"Nog geen {platform} data voor {page.capitalize()}.")
@@ -1026,15 +1040,15 @@ def show_channel_dashboard(platform: str, page: str):
         by_month["bereik_per_post"] = (by_month["bereik"] / by_month["posts"]).round(0)
         yearly_data[year] = by_month
 
-    # Volgers-groei per maand uit follower_snapshots (cached)
+    # Volgers-groei per maand uit follower_snapshots (cached, batch query)
     @st.cache_data(ttl=900)
     def _get_yearly_followers(_platform, _page, _years):
+        all_data = get_follower_counts_batch(DEFAULT_DB, _platform, _page)
         result = {}
         for year in sorted(_years):
             monthly = []
             for m in range(1, 13):
-                fc = get_follower_count(DEFAULT_DB, _platform, _page, f"{year}-{m:02d}")
-                monthly.append(fc)
+                monthly.append(all_data.get(f"{year}-{m:02d}"))
             result[year] = monthly
         return result
 
@@ -1299,11 +1313,8 @@ def show_dashboard(page: str | None = None):
                 all_vals = []
                 for plat in platforms:
                     base_color = PLATFORM_COLORS.get(plat, YEAR_COLOR_DEFAULT)
-                    values = []
-                    for m in range(1, 13):
-                        month_str = f"{sorted_yrs[-1]}-{m:02d}"
-                        fc = get_follower_count(DEFAULT_DB, plat, page or "prins", month_str)
-                        values.append(fc)
+                    all_followers = get_follower_counts_batch(DEFAULT_DB, plat, page or "prins")
+                    values = [all_followers.get(f"{sorted_yrs[-1]}-{m:02d}") for m in range(1, 13)]
                     all_vals.extend([v for v in values if v is not None])
                     fig.add_trace(go.Scatter(
                         x=list(range(1, 13)), y=values,
@@ -1331,35 +1342,6 @@ def show_dashboard(page: str | None = None):
             st.subheader(f"Volgers-groei {sorted(selected_years)[-1]}")
             st.plotly_chart(overview_follower_chart(), use_container_width=True)
 
-
-def show_single_channel(platform: str, page: str):
-    """Show dashboard + posts for a single platform/page combination."""
-    if platform == "tiktok":
-        # TikTok sync
-        sync_tiktok_followers(page)
-        sync_tiktok_videos(page)
-    else:
-        # Meta sync (Facebook/Instagram)
-        sync_posts_from_api(page)
-        sync_follower_current(page)
-
-    label = page.capitalize()
-    plat_label = platform.capitalize()
-
-    PLATFORM_ICONS = {
-        "facebook": ":material/public:",
-        "tiktok": ":material/music_note:",
-        "instagram": ":material/photo_camera:",
-    }
-    icon = PLATFORM_ICONS.get(platform, "")
-
-    st.header(f"{icon} {plat_label}")
-    st.caption(f"{label} overzicht")
-
-    show_channel_dashboard(platform, page)
-
-    st.subheader("Posts")
-    show_posts_table(platform, page)
 
 
 @st.cache_data(ttl=3600)
@@ -1473,17 +1455,19 @@ def show_benchmark():
             def _fmt_num(n):
                 return f"{n:,.0f}" if isinstance(n, (int, float)) and n == int(n) else f"{n}"
 
-            def _build_kpi_html(rows, bold=False):
+            def _build_kpi_html(prins_rows, comp_rows):
                 cols = ["Merk", "Volgers", "Posts", "Likes", "Reacties",
                         "Shares", "Engagement", "Gem. ER%"]
-                weight = "font-weight:600;" if bold else ""
                 html = "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
                 html += "<thead><tr>"
                 for c in cols:
                     align = "left" if c == "Merk" else "right"
                     html += f"<th style='text-align:{align};padding:8px 12px;border-bottom:2px solid #ddd;'>{c}</th>"
                 html += "</tr></thead><tbody>"
-                for r in rows:
+                for r in prins_rows + comp_rows:
+                    is_prins = r.get("_is_prins", False)
+                    weight = "font-weight:600;" if is_prins else ""
+                    border = "border-bottom:2px solid #ccc;" if is_prins else "border-bottom:1px solid #eee;"
                     html += f"<tr style='{weight}'>"
                     for c in cols:
                         val = r.get(c, "")
@@ -1498,17 +1482,13 @@ def show_benchmark():
                             cell = f"{val:.4f}%"
                         else:
                             cell = _fmt_num(val)
-                        html += f"<td style='text-align:{align};padding:8px 12px;border-bottom:1px solid #eee;'>{cell}</td>"
+                        html += f"<td style='text-align:{align};padding:8px 12px;{border}'>{cell}</td>"
                     html += "</tr>"
                 html += "</tbody></table>"
                 return html
 
-            if prins_rows:
-                st.markdown(_build_kpi_html(prins_rows, bold=True),
-                            unsafe_allow_html=True)
-            if comp_rows:
-                st.markdown(_build_kpi_html(comp_rows),
-                            unsafe_allow_html=True)
+            st.markdown(_build_kpi_html(prins_rows, comp_rows),
+                        unsafe_allow_html=True)
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
@@ -1615,6 +1595,11 @@ def show_benchmark():
             all_unique_pages.update(get_competitor_keys(plat))
         all_pages_ai = list(all_unique_pages)
 
+        _benchmark_posts = {f"{p}_{plat}": get_posts(platform=plat, page=p)
+                            for p in all_pages_ai
+                            for plat in ["facebook", "instagram", "tiktok"]}
+        _benchmark_stats = get_benchmark_stats(pages=all_pages_ai)
+
         saved_report = get_report(DEFAULT_DB, "benchmark", platform="benchmark", page="")
         if saved_report:
             st.markdown(saved_report)
@@ -1622,11 +1607,7 @@ def show_benchmark():
                          key="btn_benchmark_ai_regen"):
                 with st.spinner("AI analyseert concurrenten..."):
                     report = ai_insights.generate_competitive_report(
-                        get_benchmark_stats(pages=all_pages_ai),
-                        {f"{p}_{plat}": get_posts(platform=plat, page=p)
-                         for p in all_pages_ai
-                         for plat in ["facebook", "instagram", "tiktok"]},
-                    )
+                        _benchmark_stats, _benchmark_posts)
                     save_report(DEFAULT_DB, "benchmark", report,
                                 platform="benchmark", page="")
                     st.rerun()
@@ -1635,14 +1616,44 @@ def show_benchmark():
                          key="btn_benchmark_ai_gen"):
                 with st.spinner("AI analyseert concurrenten..."):
                     report = ai_insights.generate_competitive_report(
-                        get_benchmark_stats(pages=all_pages_ai),
-                        {f"{p}_{plat}": get_posts(platform=plat, page=p)
-                         for p in all_pages_ai
-                         for plat in ["facebook", "instagram", "tiktok"]},
-                    )
+                        _benchmark_stats, _benchmark_posts)
                     save_report(DEFAULT_DB, "benchmark", report,
                                 platform="benchmark", page="")
                     st.rerun()
+
+        # ── Chat over benchmark data ──
+        st.divider()
+        st.subheader(":material/chat: Stel een vraag")
+
+        bench_chat_key = "benchmark_ai_chat"
+        bench_summary_key = "benchmark_ai_summary"
+        if bench_chat_key not in st.session_state:
+            st.session_state[bench_chat_key] = []
+
+        # Bouw benchmark-samenvatting voor chat context (1x per sessie)
+        if bench_summary_key not in st.session_state or not st.session_state[bench_summary_key]:
+            st.session_state[bench_summary_key] = ai_insights.build_cross_platform_summary(
+                _benchmark_posts,
+                {f"{r['page']}_{r['platform']}": r.get("latest_followers")
+                 for r in _benchmark_stats})
+
+        for msg in st.session_state[bench_chat_key]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        if prompt := st.chat_input("Stel een vraag over de concurrentiedata...",
+                                   key="benchmark_chat_input"):
+            st.session_state[bench_chat_key].append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                answer = st.write_stream(
+                    ai_insights.chat_with_data_stream(
+                        st.session_state[bench_summary_key],
+                        st.session_state[bench_chat_key]))
+            st.session_state[bench_chat_key].append(
+                {"role": "assistant", "content": answer})
 
 
 @st.cache_data(ttl=300)
@@ -1829,114 +1840,71 @@ def _show_remarks_page():
 def main():
     _auto_refresh_tokens()
 
-    # ── Sidebar navigatie ──
-    if "nav" not in st.session_state:
-        st.session_state.nav = "prins_instagram"
-
-    def set_nav(value):
-        st.session_state.nav = value
-
     try:
         st.logo("files/prins_logo.png")
     except Exception:
         pass
 
-    with st.sidebar:
-        st.caption("SOCIAL TRACKER")
+    from functools import partial
 
-        _active_nav = st.session_state.nav
+    def _channel_page(platform: str, page: str):
+        """Render a single channel page."""
+        label = page.capitalize()
+        plat_label = platform.capitalize()
+        PLATFORM_ICONS = {
+            "facebook": ":material/public:",
+            "tiktok": ":material/music_note:",
+            "instagram": ":material/photo_camera:",
+        }
+        icon = PLATFORM_ICONS.get(platform, "")
+        st.header(f"{icon} {plat_label}")
+        st.caption(f"{label} overzicht")
+        _sync_sidebar(platform, page)
+        posts = _cached_get_posts(platform, page)
+        show_channel_dashboard(platform, page, posts=posts)
+        st.subheader("Posts")
+        show_posts_table(platform, page, posts=posts)
 
-        with st.expander(":material/pets: Prins", expanded=st.session_state.nav.startswith("prins")):
-            st.button(":material/photo_camera: Instagram", key="btn_prins_ig",
-                      use_container_width=True,
-                      on_click=set_nav, args=("prins_instagram",),
-                      type="primary" if _active_nav == "prins_instagram" else "secondary")
-            st.button(":material/public: Facebook", key="btn_prins_fb",
-                      use_container_width=True,
-                      on_click=set_nav, args=("prins_facebook",),
-                      type="primary" if _active_nav == "prins_facebook" else "secondary")
-            st.button(":material/music_note: TikTok", key="btn_prins_tk",
-                      use_container_width=True,
-                      on_click=set_nav, args=("prins_tiktok",),
-                      type="primary" if _active_nav == "prins_tiktok" else "secondary")
+    # Build page list with st.Page using callables
+    prins_pages = [
+        st.Page(partial(_channel_page, "instagram", "prins"),
+                title="Instagram", icon=":material/photo_camera:",
+                url_path="prins-instagram", default=True),
+        st.Page(partial(_channel_page, "facebook", "prins"),
+                title="Facebook", icon=":material/public:",
+                url_path="prins-facebook"),
+        st.Page(partial(_channel_page, "tiktok", "prins"),
+                title="TikTok", icon=":material/music_note:",
+                url_path="prins-tiktok"),
+        st.Page(show_benchmark,
+                title="Concurrenten", icon=":material/leaderboard:",
+                url_path="concurrenten"),
+    ]
+    edupet_pages = [
+        st.Page(partial(_channel_page, "instagram", "edupet"),
+                title="Instagram", icon=":material/photo_camera:",
+                url_path="edupet-instagram"),
+        st.Page(partial(_channel_page, "facebook", "edupet"),
+                title="Facebook", icon=":material/public:",
+                url_path="edupet-facebook"),
+    ]
+    other_pages = [
+        st.Page(_show_ai_page,
+                title="AI Inzichten", icon=":material/auto_awesome:",
+                url_path="ai-inzichten"),
+        st.Page(_show_remarks_page,
+                title="Opmerkingen", icon=":material/comment:",
+                url_path="opmerkingen"),
+    ]
 
-        with st.expander(":material/pets: Edupet", expanded=st.session_state.nav.startswith("edupet")):
-            st.button(":material/photo_camera: Instagram", key="btn_edupet_ig",
-                      use_container_width=True,
-                      on_click=set_nav, args=("edupet_instagram",),
-                      type="primary" if _active_nav == "edupet_instagram" else "secondary")
-            st.button(":material/public: Facebook", key="btn_edupet_fb",
-                      use_container_width=True,
-                      on_click=set_nav, args=("edupet_facebook",),
-                      type="primary" if _active_nav == "edupet_facebook" else "secondary")
+    pg = st.navigation({
+        "Prins": prins_pages,
+        "Edupet": edupet_pages,
+        "Tools": other_pages,
+    })
 
-        st.button(":material/leaderboard: Concurrenten", key="btn_benchmark",
-                  use_container_width=True,
-                  on_click=set_nav, args=("benchmark",),
-                  type="primary" if _active_nav == "benchmark" else "secondary")
-
-        st.button(":material/auto_awesome: AI Inzichten", key="btn_ai",
-                  use_container_width=True,
-                  on_click=set_nav, args=("ai_insights",),
-                  type="primary" if _active_nav == "ai_insights" else "secondary")
-
-        st.button(":material/comment: Opmerkingen", key="btn_remarks",
-                  use_container_width=True,
-                  on_click=set_nav, args=("remarks",),
-                  type="primary" if _active_nav == "remarks" else "secondary")
-
-        # ── Token status ──
-        _cur_token = _get_secret("PRINS_TOKEN")
-        _cur_valid = _check_token(_cur_token) if _cur_token else False
-        if _cur_valid:
-            _cur_user = _get_secret("USER_TOKEN")
-            _days = _token_expiry_days(_cur_user) if _cur_user else None
-            if _days is not None and _days < 10:
-                st.warning(f"Token verloopt over {_days} dagen — wordt automatisch vernieuwd",
-                           icon=":material/schedule:")
-            elif _days is not None:
-                st.success(f"API verbonden ({_days}d geldig)", icon=":material/check_circle:")
-            else:
-                st.success("API verbonden", icon=":material/check_circle:")
-        else:
-            st.error("Token verlopen", icon=":material/error:")
-            new_token = st.text_input(
-                "User Token",
-                type="password",
-                placeholder="Plak hier je nieuwe token",
-            )
-            if st.button("Vernieuwen", key="btn_refresh_token", use_container_width=True):
-                if new_token:
-                    success, msg = refresh_all_tokens(new_token)
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-                else:
-                    st.warning("Plak eerst een token.")
-
-
-
-    # ── Content ──
     _page_fade_in()
-    nav = st.session_state.nav
-    if nav == "benchmark":
-        show_benchmark()
-    elif nav == "ai_insights":
-        _show_ai_page()
-    elif nav == "remarks":
-        _show_remarks_page()
-    elif nav == "prins_instagram":
-        show_single_channel("instagram", "prins")
-    elif nav == "prins_facebook":
-        show_single_channel("facebook", "prins")
-    elif nav == "prins_tiktok":
-        show_single_channel("tiktok", "prins")
-    elif nav == "edupet_instagram":
-        show_single_channel("instagram", "edupet")
-    elif nav == "edupet_facebook":
-        show_single_channel("facebook", "edupet")
+    pg.run()
 
 
 def show_terms_of_service():
@@ -2037,12 +2005,11 @@ _query_params = st.query_params
 _page_param = _query_params.get("page", "")
 
 if _page_param == "ping":
-    # Health-check endpoint voor UptimeRobot — houdt de app wakker
     st.write("pong")
     st.stop()
 elif _page_param == "terms":
     show_terms_of_service()
 elif _page_param == "privacy":
     show_privacy_policy()
-elif __name__ == "__main__":
+else:
     main()

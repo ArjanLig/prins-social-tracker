@@ -85,3 +85,22 @@ def test_log_and_get_uploads(tmp_path):
     assert len(uploads) == 1
     assert uploads[0]["filename"] == "test.csv"
     assert uploads[0]["post_count"] == 5
+
+def test_get_follower_counts_batch(tmp_path):
+    """get_follower_counts_batch returns dict of month→followers."""
+    from database import save_follower_snapshot, get_follower_counts_batch
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    save_follower_snapshot(db_path, "instagram", "prins", 1000, month="2026-01")
+    save_follower_snapshot(db_path, "instagram", "prins", 1100, month="2026-02")
+    save_follower_snapshot(db_path, "instagram", "prins", 1200, month="2026-03")
+    result = get_follower_counts_batch(db_path, "instagram", "prins")
+    assert result == {"2026-01": 1000, "2026-02": 1100, "2026-03": 1200}
+
+def test_get_follower_counts_batch_empty(tmp_path):
+    """get_follower_counts_batch returns empty dict when no data."""
+    from database import get_follower_counts_batch
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    result = get_follower_counts_batch(db_path, "instagram", "prins")
+    assert result == {}

@@ -171,6 +171,7 @@ def save_follower_snapshot(db_path: str, platform: str, page: str,
         conn.close()
     get_follower_count.clear()
     get_follower_previous_month.clear()
+    get_follower_counts_batch.clear()
 
 
 @st.cache_data(ttl=300)
@@ -203,6 +204,24 @@ def get_follower_previous_month(db_path: str, platform: str, page: str) -> int |
         row = conn.execute(sql, params).fetchone()
         conn.close()
         return row["followers"] if row else None
+
+
+@st.cache_data(ttl=300)
+def get_follower_counts_batch(db_path: str, platform: str, page: str) -> dict[str, int]:
+    """Haal alle follower snapshots op voor platform/page in 1 query.
+    Returns dict: {"2026-01": 1000, "2026-02": 1100, ...}
+    """
+    sql = ("SELECT month, followers FROM follower_snapshots "
+           "WHERE platform = ? AND page = ? ORDER BY month ASC")
+    params = [platform, page]
+    if _USE_TURSO:
+        rows = _turso_execute(sql, params)
+        return {r["month"]: int(r["followers"]) for r in rows if r.get("followers") is not None}
+    else:
+        conn = _connect(db_path)
+        rows = conn.execute(sql, params).fetchall()
+        conn.close()
+        return {r["month"]: r["followers"] for r in rows}
 
 
 def insert_posts(db_path: str, posts: list[dict], platform: str,
