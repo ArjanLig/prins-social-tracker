@@ -1456,8 +1456,8 @@ def show_benchmark():
                     avg_er = 0
                 table_rows.append({
                     "_is_prins": page_key == "prins",
+                    "_url": profile_url or "",
                     "Merk": display_name,
-                    "Profiel": profile_url or "",
                     "Volgers": followers or 0,
                     "Posts": len(recent_posts),
                     "Likes": total_likes,
@@ -1466,46 +1466,49 @@ def show_benchmark():
                     "Engagement": total_engagement,
                     "Gem. ER%": round(avg_er, 4),
                 })
-            # Splits Prins (vast bovenaan, bold) en concurrenten (sorteerbaar)
+            # Splits Prins (vast bovenaan) en concurrenten
             prins_rows = [r for r in table_rows if r["_is_prins"]]
             comp_rows = [r for r in table_rows if not r["_is_prins"]]
 
-            _num_fmt = {
-                "Volgers": "{:,.0f}",
-                "Likes": "{:,.0f}",
-                "Reacties": "{:,.0f}",
-                "Shares": "{:,.0f}",
-                "Engagement": "{:,.0f}",
-                "Gem. ER%": "{:.4f}%",
-            }
-            _link_col_config = {
-                "Profiel": st.column_config.LinkColumn(
-                    "Profiel", display_text="Open", width="small",
-                ),
-            }
+            def _fmt_num(n):
+                return f"{n:,.0f}" if isinstance(n, (int, float)) and n == int(n) else f"{n}"
 
-            # Prins rij — vast bovenaan, bold
+            def _build_kpi_html(rows, bold=False):
+                cols = ["Merk", "Volgers", "Posts", "Likes", "Reacties",
+                        "Shares", "Engagement", "Gem. ER%"]
+                weight = "font-weight:600;" if bold else ""
+                html = "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+                html += "<thead><tr>"
+                for c in cols:
+                    align = "left" if c == "Merk" else "right"
+                    html += f"<th style='text-align:{align};padding:8px 12px;border-bottom:2px solid #ddd;'>{c}</th>"
+                html += "</tr></thead><tbody>"
+                for r in rows:
+                    html += f"<tr style='{weight}'>"
+                    for c in cols:
+                        val = r.get(c, "")
+                        align = "left" if c == "Merk" else "right"
+                        if c == "Merk":
+                            url = r.get("_url", "")
+                            if url:
+                                cell = f"<a href='{url}' target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #999;'>{val}</a>"
+                            else:
+                                cell = val
+                        elif c == "Gem. ER%":
+                            cell = f"{val:.4f}%"
+                        else:
+                            cell = _fmt_num(val)
+                        html += f"<td style='text-align:{align};padding:8px 12px;border-bottom:1px solid #eee;'>{cell}</td>"
+                    html += "</tr>"
+                html += "</tbody></table>"
+                return html
+
             if prins_rows:
-                df_prins = pd.DataFrame(prins_rows).drop(columns=["_is_prins"])
-                st.dataframe(
-                    df_prins.style
-                        .format(_num_fmt)
-                        .apply(lambda _row: ["font-weight: bold"] * len(_row),
-                               axis=1),
-                    column_config=_link_col_config,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            # Concurrenten — sorteerbaar via kolomkop
+                st.markdown(_build_kpi_html(prins_rows, bold=True),
+                            unsafe_allow_html=True)
             if comp_rows:
-                df_comp = pd.DataFrame(comp_rows).drop(columns=["_is_prins"])
-                st.dataframe(
-                    df_comp.style.format(_num_fmt),
-                    column_config=_link_col_config,
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                st.markdown(_build_kpi_html(comp_rows),
+                            unsafe_allow_html=True)
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
