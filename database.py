@@ -338,7 +338,7 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
 
 @st.cache_data(ttl=300)
 def get_posts(db_path: str = DEFAULT_DB, platform: str | None = None,
-              page: str | None = None) -> list[dict]:
+              page: str | None = None, since_date: str | None = None) -> list[dict]:
     sql = "SELECT * FROM posts WHERE 1=1"
     params = []
     if platform:
@@ -347,6 +347,9 @@ def get_posts(db_path: str = DEFAULT_DB, platform: str | None = None,
     if page:
         sql += " AND page = ?"
         params.append(page)
+    if since_date:
+        sql += " AND date >= ?"
+        params.append(since_date)
     sql += " ORDER BY date DESC"
     if _USE_TURSO:
         rows = _turso_execute(sql, params)
@@ -515,7 +518,8 @@ def get_report(db_path: str, month: str, platform: str = "cross",
 
 @st.cache_data(ttl=300)
 def get_benchmark_stats(db_path: str = DEFAULT_DB,
-                        pages: list[str] | None = None) -> list[dict]:
+                        pages: list[str] | None = None,
+                        since_date: str | None = None) -> list[dict]:
     """Haal geaggregeerde stats per page op voor benchmark-vergelijking.
 
     Returns list of dicts met: page, platform, total_posts, total_likes,
@@ -532,6 +536,9 @@ def get_benchmark_stats(db_path: str = DEFAULT_DB,
             FROM posts
             WHERE 1=1"""
     params = []
+    if since_date:
+        sql += " AND date >= ?"
+        params.append(since_date)
     if pages:
         placeholders = ",".join("?" for _ in pages)
         sql += f" AND page IN ({placeholders})"

@@ -162,6 +162,31 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── Keep-alive: voorkom dat Streamlit Cloud de app in slaapstand zet ──
+# Stuurt elke 5 min een stille interactie via de Streamlit WebSocket,
+# zodat de app als actieve sessie wordt gezien.
+import streamlit.components.v1 as _components
+_components.html(
+    """
+    <script>
+    (function keepAlive() {
+        setInterval(function() {
+            // Klik op de onzichtbare Streamlit rerun-knop om sessie actief te houden
+            var btn = window.parent.document.querySelector(
+                'button[kind="header"]'
+            );
+            if (!btn) {
+                // Fallback: stuur een fetch naar de app-URL
+                fetch(window.parent.location.href, {method: "HEAD"})
+                    .catch(function(){});
+            }
+        }, 5 * 60 * 1000);  // elke 5 minuten
+    })();
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 
 # Init database on startup (only once per app deployment)
 @st.cache_resource
@@ -1372,9 +1397,9 @@ def _cached_get_posts(platform: str, page: str) -> list:
 
 
 @st.cache_data(ttl=300)
-def _cached_get_all_platform_posts(platform: str) -> dict:
+def _cached_get_all_platform_posts(platform: str, since_date: str | None = None) -> dict:
     """Haal alle posts voor een platform op in 1 DB call, gegroepeerd per page."""
-    all_posts = get_posts(platform=platform)
+    all_posts = get_posts(platform=platform, since_date=since_date)
     by_page = {}
     for p in all_posts:
         pg = p.get("page", "")
@@ -1405,7 +1430,10 @@ def show_benchmark():
             st.caption(f"{len(comp_keys)} concurrenten geconfigureerd")
 
             # ── KPI vergelijkingstabel (laatste 6 maanden per merk) ──
-            benchmark_data = get_benchmark_stats(pages=all_pages)
+            from datetime import timedelta
+            _cutoff = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
+
+            benchmark_data = get_benchmark_stats(pages=all_pages, since_date=_cutoff)
             platform_data = [r for r in benchmark_data
                              if r.get("platform") == platform]
 
@@ -1413,20 +1441,15 @@ def show_benchmark():
                 st.info(f"Geen {platform.capitalize()} data. Klik sync om te starten.")
                 continue
 
-            from datetime import timedelta
-            _cutoff = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
-
             st.subheader("KPI Vergelijking")
             st.caption(f"Op basis van alle posts sinds {_cutoff}")
-            all_platform_posts = _cached_get_all_platform_posts(platform)
+            all_platform_posts = _cached_get_all_platform_posts(platform, since_date=_cutoff)
             table_rows = []
             for row in platform_data:
                 page_key = row.get("page", "")
                 display_name = get_competitor_name(page_key)
                 profile_url = get_competitor_url(page_key, platform)
-                all_page_posts = all_platform_posts.get(page_key, [])
-                recent_posts = [p for p in all_page_posts
-                                if p.get("date", "")[:10] >= _cutoff]
+                recent_posts = all_platform_posts.get(page_key, [])
                 total_likes = sum(p.get("likes", 0) or 0 for p in recent_posts)
                 total_comments = sum(p.get("comments", 0) or 0 for p in recent_posts)
                 total_shares = sum(p.get("shares", 0) or 0 for p in recent_posts)
@@ -1456,39 +1479,109 @@ def show_benchmark():
                 return f"{n:,.0f}" if isinstance(n, (int, float)) and n == int(n) else f"{n}"
 
             def _build_kpi_html(prins_rows, comp_rows):
-                cols = ["Merk", "Volgers", "Posts", "Likes", "Reacties",
-                        "Shares", "Engagement", "Gem. ER%"]
-                html = "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
-                html += "<thead><tr>"
+                import json as _json
+                all_cols = ["Merk", "Volgers", "Posts", "Likes", "Reacties",
+                            "Shares", "Engagement", "Gem. ER%"]
+                # Verberg kolommen waar alle waarden 0 zijn (bv. Shares bij Instagram)
+                all_data = prins_rows + comp_rows
+                cols = [c for c in all_cols
+                        if c in ("Merk", "Volgers", "Posts", "Engagement", "Gem. ER%")
+                        or any(r.get(c, 0) for r in all_data)]
+                tid = f"kpi_{platform}"
+
+                # Build JSON data for JS sorting
+                all_rows_js = []
+                for r in prins_rows + comp_rows:
+                    row_data = {}
+                    for c in cols:
+                        row_data[c] = r.get(c, "")
+                    row_data["_is_prins"] = r.get("_is_prins", False)
+                    row_data["_url"] = r.get("_url", "")
+                    all_rows_js.append(row_data)
+
+                html = f"""
+<style>
+body {{ font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin:0; }}
+#{tid} {{ width:100%; border-collapse:collapse; font-size:14px; }}
+#{tid} th {{ padding:8px 12px; border-bottom:2px solid #ddd; cursor:pointer; user-select:none; white-space:nowrap; }}
+#{tid} th:hover {{ background:#f5f5f5; }}
+#{tid} th .sort-arrow {{ font-size:10px; margin-left:4px; color:#999; }}
+#{tid} td {{ padding:8px 12px; }}
+#{tid} tr.prins td {{ font-weight:600; border-bottom:2px solid #ccc; }}
+#{tid} tr:not(.prins) td {{ border-bottom:1px solid #eee; }}
+</style>
+<table id="{tid}">
+<thead><tr>"""
                 for c in cols:
                     align = "left" if c == "Merk" else "right"
-                    html += f"<th style='text-align:{align};padding:8px 12px;border-bottom:2px solid #ddd;'>{c}</th>"
-                html += "</tr></thead><tbody>"
-                for r in prins_rows + comp_rows:
-                    is_prins = r.get("_is_prins", False)
-                    weight = "font-weight:600;" if is_prins else ""
-                    border = "border-bottom:2px solid #ccc;" if is_prins else "border-bottom:1px solid #eee;"
-                    html += f"<tr style='{weight}'>"
-                    for c in cols:
-                        val = r.get(c, "")
-                        align = "left" if c == "Merk" else "right"
-                        if c == "Merk":
-                            url = r.get("_url", "")
-                            if url:
-                                cell = f"<a href='{url}' target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #999;'>{val}</a>"
-                            else:
-                                cell = val
-                        elif c == "Gem. ER%":
-                            cell = f"{val:.4f}%"
-                        else:
-                            cell = _fmt_num(val)
-                        html += f"<td style='text-align:{align};padding:8px 12px;{border}'>{cell}</td>"
-                    html += "</tr>"
-                html += "</tbody></table>"
+                    html += f'<th data-col="{c}" style="text-align:{align}" onclick="sortKpi_{tid}(this, \'{c}\')">{c} <span class="sort-arrow"></span></th>'
+                html += "</tr></thead><tbody></tbody></table>"
+
+                html += f"""
+<script>
+(function() {{
+  var data = {_json.dumps(all_rows_js)};
+  var sortCol = null, sortAsc = true;
+  var table = document.getElementById("{tid}");
+
+  function fmtNum(n) {{
+    if (typeof n === "number") return n.toLocaleString("nl-NL", {{maximumFractionDigits: 0}});
+    return n;
+  }}
+
+  function render() {{
+    var tbody = table.querySelector("tbody");
+    tbody.innerHTML = "";
+    var prins = data.filter(function(r) {{ return r._is_prins; }});
+    var comp = data.filter(function(r) {{ return !r._is_prins; }});
+    if (sortCol) {{
+      var dir = sortAsc ? 1 : -1;
+      comp.sort(function(a, b) {{
+        var va = a[sortCol], vb = b[sortCol];
+        if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+        return String(va).localeCompare(String(vb), "nl") * dir;
+      }});
+    }}
+    var all = prins.concat(comp);
+    var cols = {_json.dumps(cols)};
+    all.forEach(function(r) {{
+      var tr = document.createElement("tr");
+      if (r._is_prins) tr.className = "prins";
+      cols.forEach(function(c) {{
+        var td = document.createElement("td");
+        td.style.textAlign = (c === "Merk") ? "left" : "right";
+        var val = r[c];
+        if (c === "Merk" && r._url) {{
+          td.innerHTML = '<a href="' + r._url + '" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dashed #999;">' + val + '</a>';
+        }} else if (c === "Gem. ER%") {{
+          td.textContent = (typeof val === "number" ? val.toFixed(4) : val) + "%";
+        }} else {{
+          td.textContent = (typeof val === "number") ? fmtNum(val) : val;
+        }}
+        tr.appendChild(td);
+      }});
+      tbody.appendChild(tr);
+    }});
+    // Update arrows
+    table.querySelectorAll("th .sort-arrow").forEach(function(el) {{
+      var col = el.parentElement.dataset.col;
+      el.textContent = (col === sortCol) ? (sortAsc ? "▲" : "▼") : "";
+    }});
+  }}
+
+  window["sortKpi_{tid}"] = function(th, col) {{
+    if (sortCol === col) {{ sortAsc = !sortAsc; }} else {{ sortCol = col; sortAsc = false; }}
+    render();
+  }};
+  render();
+}})();
+</script>"""
                 return html
 
-            st.markdown(_build_kpi_html(prins_rows, comp_rows),
-                        unsafe_allow_html=True)
+            # components.html i.p.v. st.html zodat we height kunnen meegeven
+            # (st.html berekent hoogte op initiële HTML, vóór JS-render)
+            _kpi_height = 50 + (len(prins_rows) + len(comp_rows)) * 42
+            _components.html(_build_kpi_html(prins_rows, comp_rows), height=_kpi_height, scrolling=False)
 
             # ── Engagement vergelijking (laatste 6 maanden) ──
             monthly_stats = get_monthly_stats(platform=platform)
@@ -1595,10 +1688,19 @@ def show_benchmark():
             all_unique_pages.update(get_competitor_keys(plat))
         all_pages_ai = list(all_unique_pages)
 
-        _benchmark_posts = {f"{p}_{plat}": get_posts(platform=plat, page=p)
-                            for p in all_pages_ai
-                            for plat in ["facebook", "instagram", "tiktok"]}
-        _benchmark_stats = get_benchmark_stats(pages=all_pages_ai)
+        # Lazy load: alleen stats ophalen (licht), posts pas bij AI generatie
+        from datetime import timedelta as _td_ai
+        _cutoff_ai = (datetime.now(timezone.utc) - _td_ai(days=180)).strftime("%Y-%m-%d")
+        _benchmark_stats = get_benchmark_stats(pages=all_pages_ai, since_date=_cutoff_ai)
+
+        def _load_benchmark_posts():
+            """Laad benchmark posts alleen als ze nodig zijn (AI generatie/chat)."""
+            posts = {}
+            for plat in ["facebook", "instagram", "tiktok"]:
+                by_page = _cached_get_all_platform_posts(plat, since_date=_cutoff_ai)
+                for p in all_pages_ai:
+                    posts[f"{p}_{plat}"] = by_page.get(p, [])
+            return posts
 
         saved_report = get_report(DEFAULT_DB, "benchmark", platform="benchmark", page="")
         if saved_report:
@@ -1606,6 +1708,7 @@ def show_benchmark():
             if st.button(":material/refresh: Opnieuw genereren",
                          key="btn_benchmark_ai_regen"):
                 with st.spinner("AI analyseert concurrenten..."):
+                    _benchmark_posts = _load_benchmark_posts()
                     report = ai_insights.generate_competitive_report(
                         _benchmark_stats, _benchmark_posts)
                     save_report(DEFAULT_DB, "benchmark", report,
@@ -1615,6 +1718,7 @@ def show_benchmark():
             if st.button(":material/auto_awesome: Genereer benchmark rapport",
                          key="btn_benchmark_ai_gen"):
                 with st.spinner("AI analyseert concurrenten..."):
+                    _benchmark_posts = _load_benchmark_posts()
                     report = ai_insights.generate_competitive_report(
                         _benchmark_stats, _benchmark_posts)
                     save_report(DEFAULT_DB, "benchmark", report,
@@ -1630,8 +1734,9 @@ def show_benchmark():
         if bench_chat_key not in st.session_state:
             st.session_state[bench_chat_key] = []
 
-        # Bouw benchmark-samenvatting voor chat context (1x per sessie)
+        # Bouw benchmark-samenvatting voor chat context (1x per sessie, lazy)
         if bench_summary_key not in st.session_state or not st.session_state[bench_summary_key]:
+            _benchmark_posts = _load_benchmark_posts()
             st.session_state[bench_summary_key] = ai_insights.build_cross_platform_summary(
                 _benchmark_posts,
                 {f"{r['page']}_{r['platform']}": r.get("latest_followers")
