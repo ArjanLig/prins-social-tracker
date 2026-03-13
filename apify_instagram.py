@@ -17,7 +17,7 @@ APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN", "")
 ACTOR_ID = "apify/instagram-scraper"
 
 
-def apify_scrape_ig_profiles(usernames: list, posts_per_profile: int = 300) -> dict:
+def apify_scrape_ig_profiles(usernames: list, posts_per_profile: int = 50) -> dict:
     """Scrape Instagram profielen via Apify.
 
     Args:
@@ -40,7 +40,7 @@ def apify_scrape_ig_profiles(usernames: list, posts_per_profile: int = 300) -> d
         "directUrls": [f"https://www.instagram.com/{u}/" for u in clean],
         "resultsType": "posts",
         "resultsLimit": posts_per_profile,
-        "addParentData": True,
+        "addParentData": False,
     }
 
     print(f"  Apify Actor starten voor {len(usernames)} profiel(en)...")

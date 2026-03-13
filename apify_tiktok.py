@@ -17,7 +17,7 @@ APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN", "")
 ACTOR_ID = "clockworks/tiktok-scraper"
 
 
-def apify_scrape_tk_profiles(usernames: list, videos_per_profile: int = 300) -> dict:
+def apify_scrape_tk_profiles(usernames: list, videos_per_profile: int = 50) -> dict:
     """Scrape TikTok profielen via Apify.
 
     Args:

@@ -207,7 +207,7 @@ def scrape_ig_all() -> dict:
     print(f"\n[Apify batch] Instagram scraping voor {len(usernames)} concurrenten...")
 
     try:
-        all_data = apify_scrape_ig_profiles(usernames, posts_per_profile=300)
+        all_data = apify_scrape_ig_profiles(usernames, posts_per_profile=50)
     except Exception as e:
         print(f"  Apify batch fout: {e}")
         return {key: {"posts": 0, "followers": None} for key in IG_COMPETITORS}
@@ -344,7 +344,7 @@ def scrape_tk_all() -> dict:
     print(f"\n[Apify batch] TikTok scraping voor {len(usernames)} concurrenten...")
 
     try:
-        all_data = apify_scrape_tk_profiles(usernames, videos_per_profile=300)
+        all_data = apify_scrape_tk_profiles(usernames, videos_per_profile=50)
     except Exception as e:
         print(f"  Apify TikTok batch fout: {e}")
         return {key: {"posts": 0, "followers": None} for key in TK_COMPETITORS}
