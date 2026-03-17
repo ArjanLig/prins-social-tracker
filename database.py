@@ -259,7 +259,7 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                         reach,impressions,likes,comments,shares,clicks,
                         engagement,engagement_rate,source_file,created_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    [platform, post_page, p.get("id", ""), p.get("date", ""),
+                    [platform, post_page, p.get("post_id") or p.get("id", ""), p.get("date", ""),
                      p.get("type", "Post"), p.get("text", ""), reach, views,
                      likes, comments, shares, p.get("clicks", 0) or 0,
                      engagement, round(er, 2), p.get("source", ""), now])
@@ -268,6 +268,10 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                 # Update if exists
                 updates = []
                 params = []
+                _pid = p.get("post_id") or p.get("id", "")
+                if _pid:
+                    updates.append("post_id = ?")
+                    params.append(_pid)
                 if reach > 0:
                     updates.append("reach = ?")
                     params.append(reach)
@@ -308,7 +312,7 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                         reach,impressions,likes,comments,shares,clicks,
                         engagement,engagement_rate,source_file,created_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (platform, post_page, p.get("id", ""), p.get("date", ""),
+                    (platform, post_page, p.get("post_id") or p.get("id", ""), p.get("date", ""),
                      p.get("type", "Post"), p.get("text", ""), reach,
                      p.get("views", 0) or 0, likes, comments, shares,
                      p.get("clicks", 0) or 0, engagement, round(er, 2),
@@ -318,6 +322,10 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                 views = p.get("views", 0) or 0
                 updates = []
                 params = []
+                _pid = p.get("post_id") or p.get("id", "")
+                if _pid:
+                    updates.append("post_id = ?")
+                    params.append(_pid)
                 if reach > 0:
                     updates.append("reach = ?")
                     params.append(reach)

@@ -549,7 +549,7 @@ def sync_posts_from_api(brand: str) -> dict:
         resp = requests.get(
             f"{FB_BASE_URL}/{page_id}/published_posts",
             params={
-                "fields": "message,created_time,shares,"
+                "fields": "message,created_time,shares,permalink_url,"
                           "likes.summary(true),comments.summary(true),"
                           "insights.metric(post_media_view,post_clicks)",
                 "limit": 10,
@@ -572,6 +572,7 @@ def sync_posts_from_api(brand: str) -> dict:
                 elif insight.get("name") == "post_media_view":
                     views = val
             fb_posts.append({
+                "post_id": post.get("permalink_url", "") or post.get("id", ""),
                 "date": post.get("created_time", "").replace("+0000", ""),
                 "type": "Post",
                 "text": (post.get("message") or "")[:200],
@@ -604,7 +605,7 @@ def sync_posts_from_api(brand: str) -> dict:
                 f"{FB_BASE_URL}/{ig_id}/media",
                 params={
                     "fields": "caption,timestamp,like_count,comments_count,"
-                              "media_type",
+                              "media_type,permalink",
                     "limit": 10,
                     "access_token": token,
                 },
@@ -637,6 +638,7 @@ def sync_posts_from_api(brand: str) -> dict:
                     except Exception:
                         pass
                 return {
+                    "post_id": post.get("permalink", "") or post.get("id", ""),
                     "date": post.get("timestamp", "").replace("+0000", ""),
                     "type": post.get("media_type", "Post"),
                     "text": (post.get("caption") or "")[:200],
@@ -696,6 +698,8 @@ def _sync_sidebar(platform: str, page: str):
                     sync_tiktok_followers(page)
                     sync_tiktok_videos(page)
                 else:
+                    sync_posts_from_api.clear()
+                    sync_follower_current.clear()
                     sync_posts_from_api(page)
                     sync_follower_current(page)
                 _cached_get_posts.clear()
@@ -757,24 +761,54 @@ def show_posts_table(platform: str, page: str, posts: list | None = None):
     df["month_num"] = df["date_parsed"].dt.month
     df = df.sort_values("date_parsed", ascending=False)
 
+    # Build post link from post_id (stored as permalink URL from API)
+    def _build_link(row):
+        pid = row.get("post_id") or ""
+        if not pid:
+            return None
+        # If already a full URL (permalink from API), use directly
+        if pid.startswith("http"):
+            return pid
+        # Fallback: construct from ID
+        if platform == "facebook":
+            return f"https://www.facebook.com/{pid}"
+        if platform == "instagram":
+            return f"https://www.instagram.com/p/{pid}/"
+        if platform == "tiktok":
+            return f"https://www.tiktok.com/@{TIKTOK_USERNAME}/video/{pid}"
+        return None
+    df["link"] = df.apply(_build_link, axis=1)
+
+    # Calculate reach % (reach / followers for that month)
+    if platform != "tiktok":
+        follower_map = get_follower_counts_batch(DEFAULT_DB, platform, page)
+        df["_month_key"] = df["date_parsed"].dt.strftime("%Y-%m")
+        df["reach_pct"] = df.apply(
+            lambda r: round(r["reach"] / follower_map[r["_month_key"]] * 100, 1)
+            if pd.notna(r.get("reach")) and r.get("reach", 0) > 0
+            and follower_map.get(r["_month_key"], 0) > 0
+            else None,
+            axis=1,
+        )
+
     if platform == "tiktok":
         display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "impressions", "likes",
                         "comments", "shares", "engagement",
-                        "engagement_rate", "theme", "campaign"]
+                        "engagement_rate", "theme", "campaign", "link"]
     elif platform == "instagram":
-        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "impressions", "likes",
+        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "reach_pct", "impressions", "likes",
                         "comments", "engagement",
-                        "engagement_rate", "theme", "campaign"]
+                        "engagement_rate", "theme", "campaign", "link"]
     else:
-        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "impressions", "likes",
+        display_cols = ["datum_fmt", "tijd_fmt", "type", "text", "reach", "reach_pct", "impressions", "likes",
                         "comments", "shares", "clicks", "engagement",
-                        "engagement_rate", "theme", "campaign"]
+                        "engagement_rate", "theme", "campaign", "link"]
     col_labels = {
         "datum_fmt": "Datum", "tijd_fmt": "Tijd", "type": "Type", "text": "Omschrijving",
-        "reach": "Bereik", "impressions": "Weergaven", "likes": "Likes",
+        "reach": "Bereik", "reach_pct": "Bereik %", "impressions": "Weergaven", "likes": "Likes",
         "comments": "Reacties", "shares": "Shares", "clicks": "Klikken",
         "engagement": "Engagement", "engagement_rate": "ER%",
-        "theme": "Thema", "campaign": "Campagne",
+        "theme": "Thema", "campaign": "Campagne", "link": "Link",
     }
 
     # Column config for polished data display
@@ -785,6 +819,7 @@ def show_posts_table(platform: str, page: str, posts: list | None = None):
         "Type": st.column_config.TextColumn("Type", width="small"),
         "Omschrijving": st.column_config.TextColumn("Omschrijving", width="large"),
         "Bereik": st.column_config.NumberColumn("Bereik", format="%d"),
+        "Bereik %": st.column_config.NumberColumn("Bereik %", format="%.1f%%"),
         "Weergaven": st.column_config.NumberColumn("Weergaven", format="%d"),
         "Likes": st.column_config.NumberColumn("Likes", format="%d"),
         "Reacties": st.column_config.NumberColumn("Reacties", format="%d"),
@@ -795,6 +830,7 @@ def show_posts_table(platform: str, page: str, posts: list | None = None):
                                                 format="%.1f%%"),
         "Thema": st.column_config.TextColumn("Thema", width="medium"),
         "Campagne": st.column_config.TextColumn("Campagne", width="medium"),
+        "Link": st.column_config.LinkColumn("Link", display_text="Bekijk", width="small"),
     }
 
     years = sorted(df["year"].dropna().unique(), reverse=True)
