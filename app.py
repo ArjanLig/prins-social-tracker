@@ -552,7 +552,7 @@ def sync_posts_from_api(brand: str) -> dict:
                 "fields": "message,created_time,shares,permalink_url,"
                           "likes.summary(true),comments.summary(true),"
                           "insights.metric(post_media_view,post_clicks)",
-                "limit": 10,
+                "limit": 50,
                 "access_token": token,
             },
             timeout=15,
@@ -606,7 +606,7 @@ def sync_posts_from_api(brand: str) -> dict:
                 params={
                     "fields": "caption,timestamp,like_count,comments_count,"
                               "media_type,permalink",
-                    "limit": 10,
+                    "limit": 50,
                     "access_token": token,
                 },
                 timeout=10,
