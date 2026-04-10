@@ -1106,7 +1106,7 @@ def show_channel_dashboard(platform: str, page: str, posts: list | None = None):
     def _get_yearly_followers(platform_key, page_key, years_key):
         all_data = get_follower_counts_batch(DEFAULT_DB, platform_key, page_key)
         result = {}
-        for year in sorted(_years):
+        for year in sorted(years_key):
             monthly = []
             for m in range(1, 13):
                 monthly.append(all_data.get(f"{year}-{m:02d}"))
