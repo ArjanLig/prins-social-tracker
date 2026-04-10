@@ -121,9 +121,20 @@ def tiktok_get_videos(username: str, max_count: int = 20, page: str = "prins") -
             date_str = ""
 
         desc = v.get("title") or v.get("description") or ""
+
+        # Detect post type: carousel/photo posts have "photomode" in thumbnail URLs
+        thumbs = v.get("thumbnails") or []
+        is_slideshow = any("photomode" in (t.get("url") or "") for t in thumbs)
+        if not is_slideshow:
+            # Fallback: check formats if available (non-flat-playlist mode)
+            formats = v.get("formats") or []
+            if formats and not any(f.get("vcodec", "none") != "none" for f in formats):
+                is_slideshow = True
+        post_type = "Carousel" if is_slideshow else "Video"
+
         posts.append({
             "date": date_str,
-            "type": "Video",
+            "type": post_type,
             "text": desc[:200],
             "reach": 0,
             "views": v.get("view_count", 0) or 0,

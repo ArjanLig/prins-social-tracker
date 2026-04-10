@@ -97,9 +97,11 @@ def apify_scrape_tk_profiles(usernames: list, videos_per_profile: int = 50) -> d
         video_id = str(item.get("id", ""))
         caption = (item.get("text") or "")[:200]
 
+        post_type = "Carousel" if item.get("isSlideshow") else "Video"
+
         results[owner]["posts"].append({
             "date": date_str,
-            "type": "Video",
+            "type": post_type,
             "text": caption,
             "likes": item.get("diggCount", 0) or 0,
             "comments": item.get("commentCount", 0) or 0,
