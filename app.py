@@ -1103,8 +1103,8 @@ def show_channel_dashboard(platform: str, page: str, posts: list | None = None):
 
     # Volgers-groei per maand uit follower_snapshots (cached, batch query)
     @st.cache_data(ttl=900)
-    def _get_yearly_followers(_platform, _page, _years):
-        all_data = get_follower_counts_batch(DEFAULT_DB, _platform, _page)
+    def _get_yearly_followers(platform_key, page_key, years_key):
+        all_data = get_follower_counts_batch(DEFAULT_DB, platform_key, page_key)
         result = {}
         for year in sorted(_years):
             monthly = []
