@@ -47,8 +47,14 @@ def _turso_execute(sql: str, params: list | None = None) -> list[dict]:
     resp.raise_for_status()
     result = resp.json()
 
+    # Check for SQL errors in Turso response
+    first_result = result.get("results", [{}])[0]
+    if first_result.get("type") == "error":
+        error = first_result.get("error", {})
+        raise RuntimeError(f"{error.get('code', 'UNKNOWN')}: {error.get('message', 'Unknown SQL error')}")
+
     # Parse response
-    res = result.get("results", [{}])[0].get("response", {}).get("result", {})
+    res = first_result.get("response", {}).get("result", {})
     cols = [c["name"] for c in res.get("cols", [])]
     rows = []
     for row in res.get("rows", []):
@@ -265,7 +271,7 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                      engagement, round(er, 2), p.get("source", ""), now])
                 inserted += 1
             except Exception:
-                # Update if exists
+                # Update all metrics if post already exists
                 updates = []
                 params = []
                 _pid = p.get("post_id") or p.get("id", "")
@@ -278,6 +284,20 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                 if views > 0:
                     updates.append("impressions = ?")
                     params.append(views)
+                if likes > 0:
+                    updates.append("likes = ?")
+                    params.append(likes)
+                if comments > 0:
+                    updates.append("comments = ?")
+                    params.append(comments)
+                if shares > 0:
+                    updates.append("shares = ?")
+                    params.append(shares)
+                if engagement > 0:
+                    updates.append("engagement = ?")
+                    params.append(engagement)
+                    updates.append("engagement_rate = ?")
+                    params.append(round(er, 2))
                 if updates:
                     params.extend([platform, post_page, p.get("date", ""), p.get("text", "")])
                     _turso_execute(
@@ -319,6 +339,7 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                      p.get("source", ""), now))
                 inserted += 1
             except sqlite3.IntegrityError:
+                # Update all metrics if post already exists
                 views = p.get("views", 0) or 0
                 updates = []
                 params = []
@@ -332,6 +353,20 @@ def insert_posts(db_path: str, posts: list[dict], platform: str,
                 if views > 0:
                     updates.append("impressions = ?")
                     params.append(views)
+                if likes > 0:
+                    updates.append("likes = ?")
+                    params.append(likes)
+                if comments > 0:
+                    updates.append("comments = ?")
+                    params.append(comments)
+                if shares > 0:
+                    updates.append("shares = ?")
+                    params.append(shares)
+                if engagement > 0:
+                    updates.append("engagement = ?")
+                    params.append(engagement)
+                    updates.append("engagement_rate = ?")
+                    params.append(round(er, 2))
                 if updates:
                     params.extend([platform, post_page, p.get("date", ""), p.get("text", "")])
                     conn.execute(
