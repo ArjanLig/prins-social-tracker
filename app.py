@@ -1099,6 +1099,7 @@ def show_channel_dashboard(platform: str, page: str, posts: list | None = None):
         by_month = by_month.reindex(range(1, 13))
         # Bereik per post (hoe ver komt je content)
         by_month["bereik_per_post"] = (by_month["bereik"] / by_month["posts"]).round(0)
+        by_month["weergaven_per_post"] = (by_month["weergaven"] / by_month["posts"]).round(0)
         yearly_data[year] = by_month
 
     # Volgers-groei per maand uit follower_snapshots (cached, batch query)
@@ -1187,9 +1188,14 @@ def show_channel_dashboard(platform: str, page: str, posts: list | None = None):
         st.plotly_chart(year_line_chart("er", "E.R. per post (gem. per maand)"),
                         use_container_width=True)
     with col_b:
-        st.subheader("Bereik per post")
-        st.plotly_chart(year_line_chart("bereik_per_post", "Bereik per post"),
-                        use_container_width=True)
+        if platform == "tiktok":
+            st.subheader("Weergaven per post")
+            st.plotly_chart(year_line_chart("weergaven_per_post", "Weergaven per post"),
+                            use_container_width=True)
+        else:
+            st.subheader("Bereik per post")
+            st.plotly_chart(year_line_chart("bereik_per_post", "Bereik per post"),
+                            use_container_width=True)
 
     # Volgers-groei grafiek
     def follower_chart():
