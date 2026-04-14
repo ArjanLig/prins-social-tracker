@@ -422,14 +422,14 @@ def collect_summary(prins_fb_posts: list[dict], edupet_fb_posts: list[dict],
 
 
 def analyze_with_ai(summary: str) -> str:
-    """Stuur de samenvatting naar OpenAI GPT-4o-mini voor analyse."""
-    from openai import OpenAI
+    """Stuur de samenvatting naar Groq (Llama 3.3 70B) voor analyse."""
+    from groq import Groq
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        return "⚠️  Geen OPENAI_API_KEY gevonden in .env — analyse overgeslagen."
+        return "⚠️  Geen GROQ_API_KEY gevonden in .env — analyse overgeslagen."
 
-    client = OpenAI(api_key=api_key)
+    client = Groq(api_key=api_key)
 
     system_prompt = (
         "Je bent een ervaren social media analist die werkt voor Prins Petfoods, "
@@ -447,7 +447,7 @@ def analyze_with_ai(summary: str) -> str:
     )
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Analyseer deze social media data:\n\n{summary}"},

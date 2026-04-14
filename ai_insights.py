@@ -1,11 +1,13 @@
 # ai_insights.py
-"""AI-analyse module voor Prins Social Tracker — GPT-4o-mini."""
+"""AI-analyse module voor Prins Social Tracker — Groq (Llama 3.3 70B)."""
 
 import os
 from datetime import datetime, timezone
 
 import streamlit as st
-from openai import OpenAI
+from groq import Groq
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 DAGEN_NL = {
@@ -22,16 +24,16 @@ def _get_secret(key: str, default: str = "") -> str:
         return os.getenv(key, default)
 
 
-def _call_openai(system_prompt: str, user_prompt: str) -> str:
-    """Stuur een prompt naar OpenAI GPT-4o-mini en return het antwoord."""
-    api_key = _get_secret("OPENAI_API_KEY")
+def _call_llm(system_prompt: str, user_prompt: str) -> str:
+    """Stuur een prompt naar Groq (Llama 3.3 70B) en return het antwoord."""
+    api_key = _get_secret("GROQ_API_KEY")
     if not api_key:
-        return "⚠️ Geen OPENAI_API_KEY gevonden. Voeg deze toe in Streamlit Cloud → Settings → Secrets."
+        return "⚠️ Geen GROQ_API_KEY gevonden. Voeg deze toe in Streamlit Cloud → Settings → Secrets."
 
     try:
-        client = OpenAI(api_key=api_key)
+        client = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -41,7 +43,7 @@ def _call_openai(system_prompt: str, user_prompt: str) -> str:
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ OpenAI fout: {e}"
+        return f"⚠️ Groq fout: {e}"
 
 
 MAAND_NL = {
@@ -188,7 +190,7 @@ def analyze_posts(posts: list[dict], platform: str, page: str,
         "Houd rekening met de doelgroep: huisdiereigenaren in Nederland/België."
     )
 
-    return _call_openai(system_prompt, f"Analyseer deze social media data:\n\n{summary}")
+    return _call_llm(system_prompt, f"Analyseer deze social media data:\n\n{summary}")
 
 
 def generate_monthly_report(posts: list[dict], platform: str, page: str,
@@ -215,7 +217,7 @@ def generate_monthly_report(posts: list[dict], platform: str, page: str,
         "Schrijf helder en bondig. Gebruik cijfers uit de data."
     )
 
-    return _call_openai(system_prompt,
+    return _call_llm(system_prompt,
                         f"Schrijf een maandrapport voor {month}:\n\n{summary}")
 
 
@@ -237,7 +239,7 @@ def suggest_content(posts: list[dict], platform: str, page: str,
         "Wees creatief maar realistisch. Focus op de huisdierensector."
     )
 
-    return _call_openai(system_prompt,
+    return _call_llm(system_prompt,
                         f"Geef content-suggesties op basis van deze data:\n\n{summary}")
 
 
@@ -281,7 +283,7 @@ def generate_cross_platform_report(all_posts: dict[str, list[dict]],
         "Vergelijk de prestaties tussen merken en platformen. Wees specifiek met cijfers."
     )
 
-    return _call_openai(system_prompt,
+    return _call_llm(system_prompt,
                         f"Schrijf een overkoepelend maandrapport voor {month}:\n\n{summary}")
 
 
@@ -302,7 +304,7 @@ def analyze_cross_platform(all_posts: dict[str, list[dict]],
         "Wees specifiek. Vergelijk merken en platformen met cijfers."
     )
 
-    return _call_openai(system_prompt,
+    return _call_llm(system_prompt,
                         f"Analyseer alle social media data:\n\n{summary}")
 
 
@@ -324,15 +326,15 @@ def suggest_content_cross_platform(all_posts: dict[str, list[dict]],
         "Wees creatief maar realistisch. Focus op de huisdierensector."
     )
 
-    return _call_openai(system_prompt,
+    return _call_llm(system_prompt,
                         f"Geef content-suggesties op basis van alle data:\n\n{summary}")
 
 
 def chat_with_data_stream(data_summary: str, messages: list[dict]):
     """Streaming chat over de social media data. Yields tekst chunks."""
-    api_key = _get_secret("OPENAI_API_KEY")
+    api_key = _get_secret("GROQ_API_KEY")
     if not api_key:
-        yield "Geen OPENAI_API_KEY gevonden — chat niet beschikbaar."
+        yield "Geen GROQ_API_KEY gevonden — chat niet beschikbaar."
         return
 
     system_prompt = (
@@ -350,9 +352,9 @@ def chat_with_data_stream(data_summary: str, messages: list[dict]):
         api_messages.append({"role": msg["role"], "content": msg["content"]})
 
     try:
-        client = OpenAI(api_key=api_key)
+        client = Groq(api_key=api_key)
         stream = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=GROQ_MODEL,
             messages=api_messages,
             temperature=0.7,
             max_tokens=1500,
@@ -363,7 +365,7 @@ def chat_with_data_stream(data_summary: str, messages: list[dict]):
             if content:
                 yield content
     except Exception as e:
-        yield f"\n\n⚠️ OpenAI fout: {e}"
+        yield f"\n\n⚠️ Groq fout: {e}"
 
 
 def generate_competitive_report(benchmark_stats: list[dict],
@@ -424,5 +426,5 @@ def generate_competitive_report(benchmark_stats: list[dict],
         "Focus op actionable inzichten."
     )
 
-    return _call_openai(system_prompt,
+    return _call_llm(system_prompt,
                         f"Analyseer deze benchmark data:\n\n{data_summary}")
